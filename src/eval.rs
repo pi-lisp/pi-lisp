@@ -8,7 +8,7 @@ pub fn eval(expr: &Expr, env: &Env) -> Result<Expr, String> {
     match expr {
         Expr::Number(_) => Ok(expr.clone()),
         Expr::Symbol(s) => env_get(env, s),
-        Expr::Func(_) | Expr::Lambda(..) | Expr::Macro(..) | Expr::Path(..) => Ok(expr.clone()),
+        Expr::Func(_) | Expr::Lambda(..) | Expr::Macro(..) | Expr::Path(..) | Expr::Pi(..) => Ok(expr.clone()),
         Expr::List(list) => {
             if list.is_empty() {
                 return Ok(Expr::List(vec![]));
@@ -30,6 +30,8 @@ pub fn eval(expr: &Expr, env: &Env) -> Result<Expr, String> {
                     "path" => return eval_path(list, env),
                     "papply" => return eval_papply(list, env),
 
+                    "pi" => return eval_pi(list, env),
+                    "piapply" => return eval_piapply(list, env),
                     _ => {
                         // If `op` names a macro, expand (with raw, unevaluated
                         // argument expressions) and evaluate the result.
@@ -133,6 +135,59 @@ fn eval_papply(list: &[Expr], env: &Env) -> Result<Expr, String> {
             eval(&body, &new_e)
         }
         other => Err(format!("papply: not a path: {:?}", other)),
+    }
+}
+
+/// (pi (x) dom cod)
+///
+/// Introduces a dependent function type (Π-type): the type of functions
+/// from `dom` to `cod(x)`, where `cod` may mention the bound variable `x`.
+///
+/// Usage examples:
+///   `(pi (x) Nat Nat)`         -- the non-dependent arrow Nat → Nat
+///   `(pi (x) Nat (Vec x))`     -- the type of vectors of length x
+///   `(piapply (pi (x) Nat Nat) 3)` -- instantiates the codomain at 3, => Nat
+fn eval_pi(list: &[Expr], env: &Env) -> Result<Expr, String> {
+    if list.len() != 4 {
+        return Err("pi: expected (pi (var) dom cod)".into());
+    }
+    let params = parse_params(&list[1])?;
+    if params.len() != 1 {
+        return Err("pi: expected exactly one bound variable, e.g. (pi (x) dom cod)".into());
+    }
+    let var = params[0].clone();
+    let dom = Box::new(list[2].clone());
+    let cod = Box::new(list[3].clone());
+    // Strong capture: a Pi type cannot recursively name itself, so holding
+    // a strong Rc here is safe and keeps the closure env alive when the Pi
+    // value escapes a temporary frame (e.g. returned from inside `papply`).
+    Ok(Expr::Pi(var, dom, cod, env.clone()))
+}
+
+/// (piapply p v)
+///
+/// Instantiates a Pi-type `p` at value `v`, evaluating the codomain
+/// expression with the bound variable set to `v`.  This gives the
+/// *type* of `p`-typed functions applied to a concrete argument value.
+///
+/// For a non-dependent arrow `(pi (x) A B)`, `piapply` always returns
+/// (the evaluation of) `B` regardless of `v`.  For genuinely dependent
+/// types, the returned type will vary with `v`.
+fn eval_piapply(list: &[Expr], env: &Env) -> Result<Expr, String> {
+    if list.len() != 3 {
+        return Err("piapply: expected (piapply <pi-type> <value>)".into());
+    }
+    let p = eval(&list[1], env)?;
+    let v = eval(&list[2], env)?;
+
+    match p {
+        Expr::Pi(var, _dom, cod, penv) => {
+            // Create a child frame of the Pi's closure env, bind the variable.
+            let new_e = new_env(Some(penv));
+            env_set(&new_e, var, v);
+            eval(&cod, &new_e)
+        }
+        other => Err(format!("piapply: not a pi-type: {:?}", other)),
     }
 }
 

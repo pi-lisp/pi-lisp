@@ -20,6 +20,22 @@ pub enum Expr {
     /// application (`papply`) can enforce the [0,1] domain.
     /// Captures a *weak* reference for the same cycle-breaking reason.
     Path(String, Box<Expr>, WeakEnv),
+    /// A dependent function / Pi-type former `(pi (x) dom cod)`.
+    ///
+    /// Encodes the type `Π(x : dom). cod(x)` from Martin-Löf / dependent
+    /// type theory.  `var` is the bound variable name, `dom` is the domain
+    /// expression, and `cod` is the codomain expression (which may mention
+    /// `var`).  Applying a Pi value with `piapply` evaluates the codomain
+    /// with `var` bound to the supplied argument, returning the
+    /// instantiated type.
+    ///
+    /// Uses a *strong* `Env` reference (unlike `Lambda`/`Path`) because a
+    /// Pi type former cannot recursively name itself in the environment it
+    /// closes over — there is no `(define myPi (pi ...))` that would cause
+    /// `myPi` to appear inside its own codomain via the closure.  A strong
+    /// reference keeps the closure env alive even when the Pi escapes a
+    /// temporary frame (e.g. when returned from inside `papply`).
+    Pi(String, Box<Expr>, Box<Expr>, Env),
 }
 
 impl fmt::Debug for Expr {
@@ -41,6 +57,7 @@ impl fmt::Debug for Expr {
             Expr::Lambda(..) => write!(f, "<lambda>"),
             Expr::Macro(..) => write!(f, "<macro>"),
             Expr::Path(..) => write!(f, "<path>"),
+            Expr::Pi(var, dom, cod, _) => write!(f, "(Π ({} : {:?}) {:?})", var, dom, cod),
         }
     }
 }

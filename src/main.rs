@@ -64,6 +64,24 @@ fn main() {
         "(papply rp i0)", // => 42
         "(papply rp i1)", // => 42
         "(papply rp 0.3)", // => 42
+
+        // pi type examples (dependent function types)
+        // Non-dependent arrow: (pi (x) A B) -- the type A -> B.
+        // piapply instantiates the codomain at a value.
+        "(define arr (pi (x) 0 1))",          // a simple non-dependent Nat -> Nat type
+        "(pi? arr)",                           // => 1  (it is a Pi type)
+        "(pi? 42)",                            // => 0  (a number is not a Pi type)
+
+        // Dependent type: the codomain mentions the bound variable.
+        // Here we define the \"family\" Vec(n) = (* n n) as a silly stand-in.
+        "(define vec-type (pi (n) 0 (* n n)))",
+        "(piapply vec-type 3)",                // => 9 (codomain instantiated at n=3)
+        "(piapply vec-type 5)",                // => 25
+
+        // Composing pi with path: a path in a pi type
+        "(define type-path (path (i) (pi (x) 0 (* x (+ i 1)))))",
+        "(piapply (papply type-path i0) 4)",   // i=0 => cod = (* 4 1) = 4
+        "(piapply (papply type-path i1) 4)",   // i=1 => cod = (* 4 2) = 8
     ];
 
     for src in exprs {

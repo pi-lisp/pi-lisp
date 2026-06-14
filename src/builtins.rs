@@ -20,6 +20,7 @@ pub fn global_env() -> Env {
     register_lists(&env);
     register_misc(&env);
     register_intervals(&env);
+    register_pi_types(&env);
 
     env
 }
@@ -227,6 +228,24 @@ fn register_intervals(env: &Env) {
                 // as lambdas created via `eval_lambda`.
                 Rc::downgrade(&dummy_env),
             ))
+        })),
+    );
+}
+
+fn register_pi_types(env: &Env) {
+    // (pi? x) -- returns 1 if x is a Pi-type value, 0 otherwise.
+    // Useful for runtime type inspection / dispatch.
+    env_set(
+        env,
+        "pi?".into(),
+        Expr::Func(Rc::new(|args| {
+            if args.len() != 1 {
+                return Err("pi?: expects exactly 1 argument".into());
+            }
+            Ok(Expr::Number(match &args[0] {
+                Expr::Pi(..) => 1.0,
+                _ => 0.0,
+            }))
         })),
     );
 }

@@ -1,13 +1,16 @@
-use crate::env::{env_get, env_set, new_env, Env};
-use crate::expr::{downgrade, is_truthy, upgrade, Expr};
+use crate::env::{env_get, env_set, Env};
+use crate::expr::{is_truthy, Expr, LexEnv};
 use crate::macros::{eval_quasiquote, expand_macro};
+use crate::compiler::compile;
 use crate::reader::parse_params;
+use std::rc::Rc;
 
 /// Evaluates an expression in the given environment.
-pub fn eval(expr: &Expr, env: &Env) -> Result<Expr, String> {
+pub fn eval(expr: &Expr, env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     match expr {
         Expr::Number(_) => Ok(expr.clone()),
         Expr::Symbol(s) => env_get(env, s),
+        Expr::Index(i) => lex_env.get(*i).ok_or_else(|| format!("unbound index {}", i)),
         Expr::Func(_) | Expr::Lambda(..) | Expr::Macro(..) | Expr::Path(..) | Expr::Pi(..) | Expr::Sigma(..) => Ok(expr.clone()),
         Expr::List(list) => {
             if list.is_empty() {
@@ -17,60 +20,66 @@ pub fn eval(expr: &Expr, env: &Env) -> Result<Expr, String> {
             if let Expr::Symbol(op) = &list[0] {
                 match op.as_str() {
                     "quote" => return Ok(list[1].clone()),
-                    "quasiquote" => return eval_quasiquote(&list[1], env, 1),
+                    "quasiquote" => return eval_quasiquote(&list[1], env, lex_env, 1),
                     "unquote" => return Err("unquote outside quasiquote".into()),
 
-                    "if" => return eval_if(list, env),
-                    "define" => return eval_define(list, env),
-                    "lambda" => return eval_lambda(list, env),
-                    "defmacro" => return eval_defmacro(list, env),
-                    "begin" => return eval_begin(list, env),
-                    "let" => return eval_let(list, env),
+                    "if" => return eval_if(list, env, lex_env),
+                    "define" => return eval_define(list, env, lex_env),
+                    "lambda" => return eval_lambda(list, env, lex_env),
+                    "defmacro" => return eval_defmacro(list, env, lex_env),
+                    "begin" => return eval_begin(list, env, lex_env),
+                    "let" => return eval_let(list, env, lex_env),
 
-                    "path" => return eval_path(list, env),
-                    "papply" => return eval_papply(list, env),
+                    "path" => return eval_path(list, env, lex_env),
+                    "papply" => return eval_papply(list, env, lex_env),
 
-                    "pi" => return eval_pi(list, env),
-                    "piapply" => return eval_piapply(list, env),
+                    "pi" => return eval_pi(list, env, lex_env),
+                    "piapply" => return eval_piapply(list, env, lex_env),
 
-                    "sigma" => return eval_sigma(list, env),
-                    "sigmacod" => return eval_sigmacod(list, env),
+                    "sigma" => return eval_sigma(list, env, lex_env),
+                    "sigmacod" => return eval_sigmacod(list, env, lex_env),
                     _ => {
                         // If `op` names a macro, expand (with raw, unevaluated
                         // argument expressions) and evaluate the result.
                         if let Ok(Expr::Macro(params, body)) = env_get(env, op) {
+                            // Macros operate on surface AST, not Core AST. Wait! 
+                            // `expand_macro` currently takes raw unevaluated args.
+                            // But `list[1..]` are Core AST (compiled). This is okay since they are S-expressions.
+                            // Let's expand, then compile, then evaluate.
                             let expanded = expand_macro(&params, &body, &list[1..])?;
-                            return eval(&expanded, env);
+                            let mut dummy_names = Vec::new();
+                            let compiled = compile(&expanded, &mut dummy_names)?;
+                            return eval(&compiled, env, lex_env);
                         }
                     }
                 }
             }
 
             // Normal function application: evaluate operator and operands.
-            let func = eval(&list[0], env)?;
+            let func = eval(&list[0], env, lex_env)?;
             let args: Result<Vec<Expr>, String> =
-                list[1..].iter().map(|e| eval(e, env)).collect();
-            apply(func, &args?)
+                list[1..].iter().map(|e| eval(e, env, lex_env)).collect();
+            apply(func, &args?, env)
         }
     }
 }
 
 /// (if cond then [else])
-fn eval_if(list: &[Expr], env: &Env) -> Result<Expr, String> {
-    let cond = eval(&list[1], env)?;
+fn eval_if(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    let cond = eval(&list[1], env, lex_env)?;
     if is_truthy(&cond) {
-        eval(&list[2], env)
+        eval(&list[2], env, lex_env)
     } else if list.len() > 3 {
-        eval(&list[3], env)
+        eval(&list[3], env, lex_env)
     } else {
         Ok(Expr::List(vec![]))
     }
 }
 
 /// (define name expr)
-fn eval_define(list: &[Expr], env: &Env) -> Result<Expr, String> {
+fn eval_define(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     if let Expr::Symbol(name) = &list[1] {
-        let val = eval(&list[2], env)?;
+        let val = eval(&list[2], env, lex_env)?;
         env_set(env, name.clone(), val.clone());
         Ok(val)
     } else {
@@ -78,31 +87,18 @@ fn eval_define(list: &[Expr], env: &Env) -> Result<Expr, String> {
     }
 }
 
-/// (lambda (params...) body)
-fn eval_lambda(list: &[Expr], env: &Env) -> Result<Expr, String> {
-    let params = parse_params(&list[1])?;
-    // Capture a *weak* reference so that storing the lambda back into the
-    // same env (e.g. `define`) does not create a strong Rc cycle.
-    Ok(Expr::Lambda(params, Box::new(list[2].clone()), downgrade(env)))
+/// (lambda arity body)
+fn eval_lambda(list: &[Expr], _env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    if let Expr::Number(arity) = &list[1] {
+        Ok(Expr::Lambda(*arity as usize, Box::new(list[2].clone()), lex_env.clone()))
+    } else {
+        Err("lambda core: expected arity".into())
+    }
 }
 
-/// (path (i) body)
-///
-/// Introduces a single interval variable `i`, ranging over [0,1], that
-/// `body` may depend on. The result is a `Expr::Path` value -- the cubical
-/// notion of a "line" / path in the type, here realized as a function
-/// I -> A that can be applied via `papply`.
-fn eval_path(list: &[Expr], env: &Env) -> Result<Expr, String> {
-    let params = parse_params(&list[1])?;
-    if params.len() != 1 {
-        return Err("path: expected exactly one interval variable, e.g. (path (i) body)".into());
-    }
-    // Weak capture for the same cycle-breaking reason as eval_lambda.
-    Ok(Expr::Path(
-        params[0].clone(),
-        Box::new(list[2].clone()),
-        downgrade(env),
-    ))
+/// (path 1.0 body)
+fn eval_path(list: &[Expr], _env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    Ok(Expr::Path(Box::new(list[2].clone()), lex_env.clone()))
 }
 
 /// (papply p t)
@@ -110,12 +106,12 @@ fn eval_path(list: &[Expr], env: &Env) -> Result<Expr, String> {
 /// Applies a path `p` at interval coordinate `t`, where `t` must be a
 /// number in [0,1]. `t = 0` and `t = 1` recover the path's endpoints;
 /// interior values give whatever interpolation `body` computes.
-fn eval_papply(list: &[Expr], env: &Env) -> Result<Expr, String> {
+fn eval_papply(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     if list.len() != 3 {
         return Err("papply: expected (papply <path> <interval-point>)".into());
     }
-    let p = eval(&list[1], env)?;
-    let t = eval(&list[2], env)?;
+    let p = eval(&list[1], env, lex_env)?;
+    let t = eval(&list[2], env, lex_env)?;
 
     let t_val = match &t {
         Expr::Number(n) => *n,
@@ -129,13 +125,9 @@ fn eval_papply(list: &[Expr], env: &Env) -> Result<Expr, String> {
     }
 
     match p {
-        Expr::Path(param, body, penv) => {
-            // Upgrade the weak closure env; fails only if the env was freed
-            // (impossible in normal use, but handled for soundness).
-            let strong_env = upgrade(&penv)?;
-            let new_e = new_env(Some(strong_env));
-            env_set(&new_e, param, Expr::Number(t_val));
-            eval(&body, &new_e)
+        Expr::Path(body, penv) => {
+            let new_env = Rc::new(LexEnv::Node(Expr::Number(t_val), penv));
+            eval(&body, env, &new_env)
         }
         other => Err(format!("papply: not a path: {:?}", other)),
     }
@@ -150,21 +142,10 @@ fn eval_papply(list: &[Expr], env: &Env) -> Result<Expr, String> {
 ///   `(pi (x) Nat Nat)`         -- the non-dependent arrow Nat → Nat
 ///   `(pi (x) Nat (Vec x))`     -- the type of vectors of length x
 ///   `(piapply (pi (x) Nat Nat) 3)` -- instantiates the codomain at 3, => Nat
-fn eval_pi(list: &[Expr], env: &Env) -> Result<Expr, String> {
-    if list.len() != 4 {
-        return Err("pi: expected (pi (var) dom cod)".into());
-    }
-    let params = parse_params(&list[1])?;
-    if params.len() != 1 {
-        return Err("pi: expected exactly one bound variable, e.g. (pi (x) dom cod)".into());
-    }
-    let var = params[0].clone();
-    let dom = Box::new(list[2].clone());
-    let cod = Box::new(list[3].clone());
-    // Strong capture: a Pi type cannot recursively name itself, so holding
-    // a strong Rc here is safe and keeps the closure env alive when the Pi
-    // value escapes a temporary frame (e.g. returned from inside `papply`).
-    Ok(Expr::Pi(var, dom, cod, env.clone()))
+fn eval_pi(list: &[Expr], _env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    let dom = Box::new(list[1].clone());
+    let cod = Box::new(list[2].clone());
+    Ok(Expr::Pi(dom, cod, lex_env.clone()))
 }
 
 /// (piapply p v)
@@ -176,19 +157,17 @@ fn eval_pi(list: &[Expr], env: &Env) -> Result<Expr, String> {
 /// For a non-dependent arrow `(pi (x) A B)`, `piapply` always returns
 /// (the evaluation of) `B` regardless of `v`.  For genuinely dependent
 /// types, the returned type will vary with `v`.
-fn eval_piapply(list: &[Expr], env: &Env) -> Result<Expr, String> {
+fn eval_piapply(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     if list.len() != 3 {
         return Err("piapply: expected (piapply <pi-type> <value>)".into());
     }
-    let p = eval(&list[1], env)?;
-    let v = eval(&list[2], env)?;
+    let p = eval(&list[1], env, lex_env)?;
+    let v = eval(&list[2], env, lex_env)?;
 
     match p {
-        Expr::Pi(var, _dom, cod, penv) => {
-            // Create a child frame of the Pi's closure env, bind the variable.
-            let new_e = new_env(Some(penv));
-            env_set(&new_e, var, v);
-            eval(&cod, &new_e)
+        Expr::Pi(_dom, cod, penv) => {
+            let new_env = Rc::new(LexEnv::Node(v, penv));
+            eval(&cod, env, &new_env)
         }
         other => Err(format!("piapply: not a pi-type: {:?}", other)),
     }
@@ -199,20 +178,10 @@ fn eval_piapply(list: &[Expr], env: &Env) -> Result<Expr, String> {
 /// Introduces a dependent pair type (Σ-type): the type of pairs where
 /// the first component has type `dom` and the second component has type `cod(x)`,
 /// where `cod` may mention the bound variable `x` (the first component).
-fn eval_sigma(list: &[Expr], env: &Env) -> Result<Expr, String> {
-    if list.len() != 4 {
-        return Err("sigma: expected (sigma (var) dom cod)".into());
-    }
-    let params = parse_params(&list[1])?;
-    if params.len() != 1 {
-        return Err("sigma: expected exactly one bound variable, e.g. (sigma (x) dom cod)".into());
-    }
-    let var = params[0].clone();
-    let dom = Box::new(list[2].clone());
-    let cod = Box::new(list[3].clone());
-    // Strong capture: a Sigma type cannot recursively name itself, so holding
-    // a strong Rc here is safe and keeps the closure env alive.
-    Ok(Expr::Sigma(var, dom, cod, env.clone()))
+fn eval_sigma(list: &[Expr], _env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    let dom = Box::new(list[1].clone());
+    let cod = Box::new(list[2].clone());
+    Ok(Expr::Sigma(dom, cod, lex_env.clone()))
 }
 
 /// (sigmacod s v)
@@ -220,77 +189,83 @@ fn eval_sigma(list: &[Expr], env: &Env) -> Result<Expr, String> {
 /// Instantiates a Sigma-type `s` at value `v` (which should be the first
 /// component of a pair), evaluating the codomain expression with the bound
 /// variable set to `v`. This gives the *type* of the second component.
-fn eval_sigmacod(list: &[Expr], env: &Env) -> Result<Expr, String> {
+fn eval_sigmacod(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     if list.len() != 3 {
         return Err("sigmacod: expected (sigmacod <sigma-type> <value>)".into());
     }
-    let s = eval(&list[1], env)?;
-    let v = eval(&list[2], env)?;
+    let s = eval(&list[1], env, lex_env)?;
+    let v = eval(&list[2], env, lex_env)?;
 
     match s {
-        Expr::Sigma(var, _dom, cod, penv) => {
-            // Create a child frame of the Sigma's closure env, bind the variable.
-            let new_e = new_env(Some(penv));
-            env_set(&new_e, var, v);
-            eval(&cod, &new_e)
+        Expr::Sigma(_dom, cod, penv) => {
+            let new_env = Rc::new(LexEnv::Node(v, penv));
+            eval(&cod, env, &new_env)
         }
         other => Err(format!("sigmacod: not a sigma-type: {:?}", other)),
     }
 }
 
 /// (defmacro name (params...) body)
-fn eval_defmacro(list: &[Expr], env: &Env) -> Result<Expr, String> {
+fn eval_defmacro(list: &[Expr], env: &Env, _lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     if let Expr::Symbol(name) = &list[1] {
         let params = parse_params(&list[2])?;
         let mac = Expr::Macro(params, Box::new(list[3].clone()));
         env_set(env, name.clone(), mac.clone());
         Ok(mac)
     } else {
-        Err("invalid defmacro: expected (defmacro <symbol> (<params...>) <body>)".into())
+        Err("invalid defmacro: expected <symbol>".into())
     }
 }
 
 /// (begin expr...)
-fn eval_begin(list: &[Expr], env: &Env) -> Result<Expr, String> {
+fn eval_begin(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     let mut result = Expr::List(vec![]);
     for e in &list[1..] {
-        result = eval(e, env)?;
+        result = eval(e, env, lex_env)?;
     }
     Ok(result)
 }
 
 /// (let ((name expr)...) body...)
-fn eval_let(list: &[Expr], env: &Env) -> Result<Expr, String> {
-    let new_e = new_env(Some(env.clone()));
+fn eval_let(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    // let expressions are compiled to bind sequentially right-to-left
+    // wait, the compiler pushes left-to-right, so the latest binding is at index 0.
+    // In compiler.rs we iterated new_names in order and pushed them.
+    // So the last binding is at the top of the stack (index 0).
+    // Let's build the lexical environment by evaluating bindings.
+    let mut current_env = lex_env.clone();
     if let Expr::List(bindings) = &list[1] {
         for b in bindings {
             if let Expr::List(pair) = b {
-                if let Expr::Symbol(name) = &pair[0] {
-                    let val = eval(&pair[1], env)?;
-                    env_set(&new_e, name.clone(), val);
-                }
+                // compile gives (name val). Wait, we don't need name here.
+                let val = eval(&pair[1], env, lex_env)?;
+                current_env = Rc::new(LexEnv::Node(val, current_env));
             }
         }
     }
     let mut result = Expr::List(vec![]);
     for e in &list[2..] {
-        result = eval(e, &new_e)?;
+        result = eval(e, env, &current_env)?;
     }
     Ok(result)
 }
 
 /// Applies a function (builtin or lambda) to already-evaluated arguments.
-pub fn apply(func: Expr, args: &[Expr]) -> Result<Expr, String> {
+pub fn apply(func: Expr, args: &[Expr], env: &Env) -> Result<Expr, String> {
     match func {
         Expr::Func(f) => f(args),
-        Expr::Lambda(params, body, env) => {
-            // Upgrade the weak closure env before creating the call frame.
-            let strong_env = upgrade(&env)?;
-            let new_e = new_env(Some(strong_env));
-            for (p, a) in params.iter().zip(args.iter()) {
-                env_set(&new_e, p.clone(), a.clone());
+        Expr::Lambda(arity, body, penv) => {
+            if args.len() != arity {
+                return Err(format!("lambda expected {} args, got {}", arity, args.len()));
             }
-            eval(&body, &new_e)
+            // Bind arguments from left to right.
+            // The compiler pushed params from left to right. Thus, the last parameter
+            // corresponds to the highest index (i.e. pushed last).
+            let mut current_env = penv;
+            for arg in args {
+                current_env = Rc::new(LexEnv::Node(arg.clone(), current_env));
+            }
+            eval(&body, env, &current_env)
         }
         other => Err(format!("not a function: {:?}", other)),
     }

@@ -1,4 +1,5 @@
 mod builtins;
+mod compiler;
 mod env;
 mod eval;
 mod expr;
@@ -7,16 +8,26 @@ mod reader;
 
 use env::Env;
 use eval::eval;
+use expr::LexEnv;
 use reader::parse_all;
+use compiler::compile;
+use std::rc::Rc;
 
 /// Parses and evaluates each top-level expression in `src`, printing results.
 fn run(src: &str, env: &Env) {
     match parse_all(src) {
         Ok(exprs) => {
+            let lex_env = Rc::new(LexEnv::Empty);
             for e in exprs {
-                match eval(&e, env) {
-                    Ok(result) => println!("{} => {:?}", src, result),
-                    Err(err) => println!("{} => Error: {}", src, err),
+                let mut dummy_names = Vec::new();
+                match compile(&e, &mut dummy_names) {
+                    Ok(compiled) => {
+                        match eval(&compiled, env, &lex_env) {
+                            Ok(result) => println!("{} => {:?}", src, result),
+                            Err(err) => println!("{} => Error: {}", src, err),
+                        }
+                    }
+                    Err(err) => println!("{} => Compile error: {}", src, err),
                 }
             }
         }

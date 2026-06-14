@@ -13,7 +13,7 @@ fn num(e: &Expr) -> Result<f64, String> {
 
 /// Builds the global environment populated with builtin procedures.
 pub fn global_env() -> Env {
-    let env = new_env(None);
+    let env = new_env();
 
     register_arithmetic(&env);
     register_comparisons(&env);
@@ -214,20 +214,13 @@ fn register_intervals(env: &Env) {
                 return Err("refl: expects exactly 1 argument".into());
             }
             // The body is `(quote x)` so that re-evaluating it always
-            // yields the value `x` unchanged, even when `x` is itself a
-            // list (which would otherwise be evaluated as a function
-            // call). It never needs to look up the bound interval
-            // variable, so any environment works as its closure.
-            let dummy_env = new_env(None);
+            // yields the value `x` unchanged.
             Ok(Expr::Path(
-                "_".into(),
                 Box::new(Expr::List(vec![
                     Expr::Symbol("quote".into()),
                     args[0].clone(),
                 ])),
-                // Weak reference — keeps the same cycle-breaking invariant
-                // as lambdas created via `eval_lambda`.
-                Rc::downgrade(&dummy_env),
+                Rc::new(crate::expr::LexEnv::Empty),
             ))
         })),
     );

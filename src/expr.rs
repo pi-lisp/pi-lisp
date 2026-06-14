@@ -6,50 +6,49 @@ use std::rc::{Rc, Weak};
 #[derive(Clone)]
 pub enum Expr {
     Symbol(String),
+    Index(usize), // De Bruijn index for local variables
     Number(f64),
     List(Vec<Expr>),
     Func(Rc<dyn Fn(&[Expr]) -> Result<Expr, String>>),
-    /// Captures a *weak* reference to the defining environment so that
-    /// recursive bindings (`(define f (lambda ...))`) do not form strong
-    /// Rc cycles and leak memory.
-    Lambda(Vec<String>, Box<Expr>, WeakEnv),
-    Macro(Vec<String>, Box<Expr>),
-    /// A path abstraction `(path (i) body)`: a function from the interval
-    /// [0,1] to a value, in the spirit of cubical type theory's paths.
-    /// Structurally similar to Lambda but kept distinct so that path
-    /// application (`papply`) can enforce the [0,1] domain.
-    /// Captures a *weak* reference for the same cycle-breaking reason.
-    Path(String, Box<Expr>, WeakEnv),
-    /// A dependent function / Pi-type former `(pi (x) dom cod)`.
-    ///
-    /// Encodes the type `Π(x : dom). cod(x)` from Martin-Löf / dependent
-    /// type theory.  `var` is the bound variable name, `dom` is the domain
-    /// expression, and `cod` is the codomain expression (which may mention
-    /// `var`).  Applying a Pi value with `piapply` evaluates the codomain
-    /// with `var` bound to the supplied argument, returning the
-    /// instantiated type.
-    ///
-    /// Uses a *strong* `Env` reference (unlike `Lambda`/`Path`) because a
-    /// Pi type former cannot recursively name itself in the environment it
-    /// closes over — there is no `(define myPi (pi ...))` that would cause
-    /// `myPi` to appear inside its own codomain via the closure.  A strong
-    /// reference keeps the closure env alive even when the Pi escapes a
-    /// temporary frame (e.g. when returned from inside `papply`).
-    Pi(String, Box<Expr>, Box<Expr>, Env),
-    /// A dependent pair / Sigma-type former `(sigma (x) dom cod)`.
-    ///
-    /// Encodes the type `Σ(x : dom). cod(x)` from Martin-Löf / dependent
-    /// type theory. `var` is the bound variable name, `dom` is the domain
-    /// expression, and `cod` is the codomain expression (which may mention
-    /// `var`). To get the type of the second component of a pair `p` of this
-    /// type, use `(sigmacod sigma-type (car p))`.
-    Sigma(String, Box<Expr>, Box<Expr>, Env),
+    // Lambda takes the number of arguments (arity), body, and lexical environment
+    Lambda(usize, Box<Expr>, Rc<LexEnv>),
+    Macro(Vec<String>, Box<Expr>), // Macros operate on S-expressions (surface syntax)
+    // Path, Pi, and Sigma each bind exactly 1 variable, so no arity needed.
+    Path(Box<Expr>, Rc<LexEnv>),
+    Pi(Box<Expr>, Box<Expr>, Rc<LexEnv>),
+    Sigma(Box<Expr>, Box<Expr>, Rc<LexEnv>),
+}
+
+#[derive(Clone, Debug)]
+pub enum LexEnv {
+    Empty,
+    Node(Expr, Rc<LexEnv>),
+}
+
+impl LexEnv {
+    pub fn get(&self, index: usize) -> Option<Expr> {
+        let mut curr = self;
+        let mut i = index;
+        loop {
+            match curr {
+                LexEnv::Empty => return None,
+                LexEnv::Node(val, next) => {
+                    if i == 0 {
+                        return Some(val.clone());
+                    }
+                    curr = next;
+                    i -= 1;
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Expr::Symbol(s) => write!(f, "{}", s),
+            Expr::Index(i) => write!(f, "#{}", i),
             Expr::Number(n) => write!(f, "{}", n),
             Expr::List(l) => {
                 write!(f, "(")?;
@@ -62,11 +61,11 @@ impl fmt::Debug for Expr {
                 write!(f, ")")
             }
             Expr::Func(_) => write!(f, "<builtin>"),
-            Expr::Lambda(..) => write!(f, "<lambda>"),
+            Expr::Lambda(arity, _, _) => write!(f, "<lambda/{}>", arity),
             Expr::Macro(..) => write!(f, "<macro>"),
             Expr::Path(..) => write!(f, "<path>"),
-            Expr::Pi(var, dom, cod, _) => write!(f, "(Π ({} : {:?}) {:?})", var, dom, cod),
-            Expr::Sigma(var, dom, cod, _) => write!(f, "(Σ ({} : {:?}) {:?})", var, dom, cod),
+            Expr::Pi(dom, cod, _) => write!(f, "(Π {:?} {:?})", dom, cod),
+            Expr::Sigma(dom, cod, _) => write!(f, "(Σ {:?} {:?})", dom, cod),
         }
     }
 }
@@ -84,45 +83,21 @@ pub fn is_truthy(e: &Expr) -> bool {
 /// Shared, mutable lexical environment (strong reference).
 pub type Env = Rc<std::cell::RefCell<EnvData>>;
 
-/// Non-owning reference to an environment, used inside closures to avoid
-/// forming `Rc` cycles when a recursive binding stores a lambda that
-/// captures the same environment it is stored in.
-pub type WeakEnv = Weak<std::cell::RefCell<EnvData>>;
+
 
 pub struct EnvData {
     pub vars: HashMap<String, Expr>,
-    /// Parent scope. Child→parent links are acyclic (environments form a
-    /// tree), so a strong `Rc` is correct and safe here.
-    pub parent: Option<Env>,
 }
 
-pub fn new_env(parent: Option<Env>) -> Env {
+pub fn new_env() -> Env {
     Rc::new(std::cell::RefCell::new(EnvData {
         vars: HashMap::new(),
-        parent,
     }))
-}
-
-/// Downgrade a strong `Env` to a `WeakEnv` for storage inside closures.
-pub fn downgrade(env: &Env) -> WeakEnv {
-    Rc::downgrade(env)
-}
-
-/// Upgrade a `WeakEnv` back to a strong `Env` when a closure is called.
-/// If the environment has already been freed (e.g. a `refl` path whose
-/// dummy env was a temporary), a fresh empty env is returned instead.
-/// This is safe because such paths never look up any variables in their
-/// closure environment (e.g. the body is a `quote` form).
-pub fn upgrade(w: &WeakEnv) -> Result<Env, String> {
-    Ok(w.upgrade().unwrap_or_else(|| new_env(None)))
 }
 
 pub fn env_get(env: &Env, name: &str) -> Result<Expr, String> {
     if let Some(v) = env.borrow().vars.get(name) {
         return Ok(v.clone());
-    }
-    if let Some(parent) = &env.borrow().parent {
-        return env_get(parent, name);
     }
     Err(format!("undefined symbol: {}", name))
 }

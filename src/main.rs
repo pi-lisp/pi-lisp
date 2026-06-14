@@ -82,6 +82,18 @@ fn main() {
         "(define type-path (path (i) (pi (x) 0 (* x (+ i 1)))))",
         "(piapply (papply type-path i0) 4)",   // i=0 => cod = (* 4 1) = 4
         "(piapply (papply type-path i1) 4)",   // i=1 => cod = (* 4 2) = 8
+
+        // sigma type examples (dependent pair types)
+        // Non-dependent pair type (Cartesian product): A x B
+        "(define pair-type (sigma (x) 0 1))",
+        "(sigma? pair-type)",                  // => 1
+        "(sigma? 42)",                         // => 0
+
+        // Dependent pair type
+        // e.g. type of lists where the first element is the length
+        "(define dyn-vec (sigma (len) 0 (* len 10)))",
+        "(sigmacod dyn-vec 3)",                // => 30
+        "(sigmacod dyn-vec 5)",                // => 50
     ];
 
     for src in exprs {

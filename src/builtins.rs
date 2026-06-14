@@ -21,6 +21,7 @@ pub fn global_env() -> Env {
     register_misc(&env);
     register_intervals(&env);
     register_pi_types(&env);
+    register_sigma_types(&env);
 
     env
 }
@@ -244,6 +245,23 @@ fn register_pi_types(env: &Env) {
             }
             Ok(Expr::Number(match &args[0] {
                 Expr::Pi(..) => 1.0,
+                _ => 0.0,
+            }))
+        })),
+    );
+}
+
+fn register_sigma_types(env: &Env) {
+    // (sigma? x) -- returns 1 if x is a Sigma-type value, 0 otherwise.
+    env_set(
+        env,
+        "sigma?".into(),
+        Expr::Func(Rc::new(|args| {
+            if args.len() != 1 {
+                return Err("sigma?: expects exactly 1 argument".into());
+            }
+            Ok(Expr::Number(match &args[0] {
+                Expr::Sigma(..) => 1.0,
                 _ => 0.0,
             }))
         })),

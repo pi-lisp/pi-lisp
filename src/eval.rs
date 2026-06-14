@@ -8,7 +8,7 @@ pub fn eval(expr: &Expr, env: &Env) -> Result<Expr, String> {
     match expr {
         Expr::Number(_) => Ok(expr.clone()),
         Expr::Symbol(s) => env_get(env, s),
-        Expr::Func(_) | Expr::Lambda(..) | Expr::Macro(..) | Expr::Path(..) | Expr::Pi(..) => Ok(expr.clone()),
+        Expr::Func(_) | Expr::Lambda(..) | Expr::Macro(..) | Expr::Path(..) | Expr::Pi(..) | Expr::Sigma(..) => Ok(expr.clone()),
         Expr::List(list) => {
             if list.is_empty() {
                 return Ok(Expr::List(vec![]));
@@ -32,6 +32,9 @@ pub fn eval(expr: &Expr, env: &Env) -> Result<Expr, String> {
 
                     "pi" => return eval_pi(list, env),
                     "piapply" => return eval_piapply(list, env),
+
+                    "sigma" => return eval_sigma(list, env),
+                    "sigmacod" => return eval_sigmacod(list, env),
                     _ => {
                         // If `op` names a macro, expand (with raw, unevaluated
                         // argument expressions) and evaluate the result.
@@ -188,6 +191,50 @@ fn eval_piapply(list: &[Expr], env: &Env) -> Result<Expr, String> {
             eval(&cod, &new_e)
         }
         other => Err(format!("piapply: not a pi-type: {:?}", other)),
+    }
+}
+
+/// (sigma (x) dom cod)
+///
+/// Introduces a dependent pair type (Σ-type): the type of pairs where
+/// the first component has type `dom` and the second component has type `cod(x)`,
+/// where `cod` may mention the bound variable `x` (the first component).
+fn eval_sigma(list: &[Expr], env: &Env) -> Result<Expr, String> {
+    if list.len() != 4 {
+        return Err("sigma: expected (sigma (var) dom cod)".into());
+    }
+    let params = parse_params(&list[1])?;
+    if params.len() != 1 {
+        return Err("sigma: expected exactly one bound variable, e.g. (sigma (x) dom cod)".into());
+    }
+    let var = params[0].clone();
+    let dom = Box::new(list[2].clone());
+    let cod = Box::new(list[3].clone());
+    // Strong capture: a Sigma type cannot recursively name itself, so holding
+    // a strong Rc here is safe and keeps the closure env alive.
+    Ok(Expr::Sigma(var, dom, cod, env.clone()))
+}
+
+/// (sigmacod s v)
+///
+/// Instantiates a Sigma-type `s` at value `v` (which should be the first
+/// component of a pair), evaluating the codomain expression with the bound
+/// variable set to `v`. This gives the *type* of the second component.
+fn eval_sigmacod(list: &[Expr], env: &Env) -> Result<Expr, String> {
+    if list.len() != 3 {
+        return Err("sigmacod: expected (sigmacod <sigma-type> <value>)".into());
+    }
+    let s = eval(&list[1], env)?;
+    let v = eval(&list[2], env)?;
+
+    match s {
+        Expr::Sigma(var, _dom, cod, penv) => {
+            // Create a child frame of the Sigma's closure env, bind the variable.
+            let new_e = new_env(Some(penv));
+            env_set(&new_e, var, v);
+            eval(&cod, &new_e)
+        }
+        other => Err(format!("sigmacod: not a sigma-type: {:?}", other)),
     }
 }
 

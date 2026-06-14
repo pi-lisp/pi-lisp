@@ -36,6 +36,14 @@ pub enum Expr {
     /// reference keeps the closure env alive even when the Pi escapes a
     /// temporary frame (e.g. when returned from inside `papply`).
     Pi(String, Box<Expr>, Box<Expr>, Env),
+    /// A dependent pair / Sigma-type former `(sigma (x) dom cod)`.
+    ///
+    /// Encodes the type `Σ(x : dom). cod(x)` from Martin-Löf / dependent
+    /// type theory. `var` is the bound variable name, `dom` is the domain
+    /// expression, and `cod` is the codomain expression (which may mention
+    /// `var`). To get the type of the second component of a pair `p` of this
+    /// type, use `(sigmacod sigma-type (car p))`.
+    Sigma(String, Box<Expr>, Box<Expr>, Env),
 }
 
 impl fmt::Debug for Expr {
@@ -58,6 +66,7 @@ impl fmt::Debug for Expr {
             Expr::Macro(..) => write!(f, "<macro>"),
             Expr::Path(..) => write!(f, "<path>"),
             Expr::Pi(var, dom, cod, _) => write!(f, "(Π ({} : {:?}) {:?})", var, dom, cod),
+            Expr::Sigma(var, dom, cod, _) => write!(f, "(Σ ({} : {:?}) {:?})", var, dom, cod),
         }
     }
 }

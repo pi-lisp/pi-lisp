@@ -127,6 +127,9 @@ fn main() {
         "(unglue (papply gpath 0.0))",
         "(unglue (papply gpath 0.5))",
         "(unglue (papply gpath 1.0))",
+
+        // print
+        "(print 'hello_world)"
     ];
 
     for src in exprs {

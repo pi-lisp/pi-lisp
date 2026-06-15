@@ -408,6 +408,9 @@ All comparison operators return `1.0` for true and `0.0` for false.
 | Form | Description |
 |---|---|
 | `(print x ...)` | Prints all arguments with `{:?}` formatting, then a newline. Returns `()`. |
+| `(read)` | Reads a line of input from standard input, parses it as a single S-expression, and returns it. |
+| `(write x)` | Prints the representation of `x` to standard output without a newline, and flushes output. Returns `()`. |
+| `(newline)` | Prints a newline to standard output. Returns `()`. |
 
 ### Runtime Type Predicates
 
@@ -468,21 +471,32 @@ at that depth.
 ## Type System Sentinels
 
 The typechecker (`typechecker.rs`) represents types as `Expr` values using
-internal sentinel symbols that are not accessible from user code.
+sentinel symbols which are accessible from user code for type annotations and signatures.
 
-| Sentinel | Meaning |
-|---|---|
-| `__Num__` | The type of all number literals. |
-| `__Type__` | The universe containing `Pi`, `Sigma`, `GlueType`, and `Path` types. |
-| `__Any__` | Top / unknown type; subsumes everything (used when inference cannot be more precise). |
-| `(__Path__ T)` | The type of path values whose body has type `T`. |
-| `__GlueType__` | The type of `GlueType` type-former values. |
-| `(__Glue__ T)` | The type of `Glue` intro terms whose base type is `T`. |
+| Sentinel | Meaning | Evaluation Behavior | Type |
+|---|---|---|---|
+| `__Num__` | The type of all number literals. | Evaluates to itself. | `__Type__` |
+| `__Type__` | The universe containing `Pi`, `Sigma`, `GlueType`, and `Path` types. | Evaluates to itself. | `__Type__` |
+| `__Any__` | Top / unknown type; subsumes everything. | Evaluates to itself. | `__Type__` |
+| `(__Path__ T)` | The type of path values whose body has type `T`. | Evaluates structurally: `(__Path__ eval(T))`. | `__Type__` |
+| `__GlueType__` | The type of `GlueType` type-former values. | Evaluates to itself. | `__Type__` |
+| `(__Glue__ T)` | The type of `Glue` intro terms whose base type is `T`. | Evaluates structurally: `(__Glue__ eval(T))`. | `__Type__` |
 
 Type checking is **bidirectional**: `infer` synthesises a type from an
 expression; `check` verifies an expression against an expected type.
 `__Any__` on either side of a `check` succeeds unconditionally, making the
 system gradually typed.
+
+---
+
+## CLI and REPL Modes
+
+The interpreter supports multiple execution modes:
+
+- **Interactive REPL**: Run `cargo run` without arguments in a terminal.
+- **Batch Stdio**: Pipe expressions into `cargo run` (e.g. `echo "(+ 1 2)" | cargo run`).
+- **File Mode**: Run `cargo run <filepath>` to execute a Lisp file.
+- **Test Mode**: Run `cargo run -- --test` to execute the internal test harness.
 
 ---
 

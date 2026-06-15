@@ -1,5 +1,5 @@
 use crate::env::{env_get, env_set, Env};
-use crate::expr::{is_truthy, Expr, LexEnv};
+use crate::expr::{is_truthy, Expr, LexEnv, is_sentinel_symbol};
 use crate::macros::{eval_quasiquote, expand_macro};
 use crate::compiler::compile;
 use crate::reader::parse_params;
@@ -9,7 +9,13 @@ use std::rc::Rc;
 pub fn eval(expr: &Expr, env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
     match expr {
         Expr::Number(_) => Ok(expr.clone()),
-        Expr::Symbol(s) => env_get(env, s),
+        Expr::Symbol(s) => {
+            if is_sentinel_symbol(s) {
+                Ok(expr.clone())
+            } else {
+                env_get(env, s)
+            }
+        }
         Expr::Index(i) => lex_env.get(*i).ok_or_else(|| format!("unbound index {}", i)),
         Expr::Func(_) | Expr::Lambda(..) | Expr::Macro(..) | Expr::Path(..) | Expr::Pi(..) | Expr::Sigma(..) | Expr::GlueType(..) | Expr::Glue(..) => Ok(expr.clone()),
         Expr::List(list) => {
@@ -42,6 +48,20 @@ pub fn eval(expr: &Expr, env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String
                     "glue-type" => return eval_glue_type(list, env, lex_env),
                     "glue"      => return eval_glue(list, env, lex_env),
                     "unglue"    => return eval_unglue(list, env, lex_env),
+                    "__Path__" => {
+                        if list.len() != 2 {
+                            return Err("__Path__: expected 1 argument".into());
+                        }
+                        let dom = eval(&list[1], env, lex_env)?;
+                        return Ok(Expr::List(vec![Expr::Symbol("__Path__".into()), dom]));
+                    }
+                    "__Glue__" => {
+                        if list.len() != 2 {
+                            return Err("__Glue__: expected 1 argument".into());
+                        }
+                        let base = eval(&list[1], env, lex_env)?;
+                        return Ok(Expr::List(vec![Expr::Symbol("__Glue__".into()), base]));
+                    }
                     _ => {
                         // If `op` names a macro, expand (with raw, unevaluated
                         // argument expressions) and evaluate the result.

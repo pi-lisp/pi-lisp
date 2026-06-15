@@ -41,7 +41,7 @@ use std::rc::Rc;
 
 use crate::env::{env_get, Env};
 use crate::eval::eval;
-use crate::expr::{Expr, LexEnv};
+use crate::expr::{Expr, LexEnv, is_sentinel_symbol};
 
 // ---------------------------------------------------------------------------
 // Public type synonyms
@@ -118,7 +118,7 @@ fn is_num(t: &Expr) -> bool {
     matches!(t, Expr::Symbol(s) if s == "__Num__")
 }
 
-fn is_type_universe(t: &Expr) -> bool {
+fn _is_type_universe(t: &Expr) -> bool {
     matches!(t, Expr::Symbol(s) if s == "__Type__")
 }
 
@@ -160,7 +160,7 @@ fn as_glue_ty(t: &Expr) -> Option<&Expr> {
 /// reduction fails we fall back to pure structural comparison so that
 /// type-checking of ground (non-dependent) terms is not disrupted by
 /// evaluation errors in unevaluable open terms.
-fn types_equal(a: &Expr, b: &Expr) -> bool {
+fn _types_equal(a: &Expr, b: &Expr) -> bool {
     types_equal_structural(a, b)
 }
 
@@ -233,11 +233,18 @@ fn infer_inner(
             if let Some(ty) = ty_global.get(s) {
                 return Ok(ty.clone());
             }
+            if is_sentinel_symbol(s) {
+                if s == "__Path__" || s == "__Glue__" {
+                    return Ok(ty_any());
+                } else {
+                    return Ok(ty_type());
+                }
+            }
             match s.as_str() {
                 "+" | "-" | "*" | "/" | "%" => Ok(ty_any()),
                 "=" | "<" | ">" | "<=" | ">=" | "not" => Ok(ty_any()),
                 "list" | "car" | "cdr" | "cons" | "null?" => Ok(ty_any()),
-                "print" => Ok(ty_any()),
+                "print" | "read" | "write" | "newline" => Ok(ty_any()),
                 "i0" | "i1" => Ok(ty_num()),
                 "refl" => Ok(ty_any()),
                 "pi?" | "sigma?" | "path?" | "glue?" | "glue-type?" => Ok(ty_num()),
@@ -311,6 +318,20 @@ fn infer_inner(
                     "glue-type" => return Ok(ty_glue_type()),
                     "glue"      => return infer_glue(list, env, lex_env, ty_global, ty_env),
                     "unglue"    => return infer_unglue(list, env, lex_env, ty_global, ty_env),
+                    "__Path__" => {
+                        if list.len() != 2 {
+                            return Err("type error: __Path__ expects 1 argument".into());
+                        }
+                        check(&list[1], &ty_type(), env, lex_env, ty_global, ty_env)?;
+                        return Ok(ty_type());
+                    }
+                    "__Glue__" => {
+                        if list.len() != 2 {
+                            return Err("type error: __Glue__ expects 1 argument".into());
+                        }
+                        check(&list[1], &ty_type(), env, lex_env, ty_global, ty_env)?;
+                        return Ok(ty_type());
+                    }
 
                     "defmacro" => return Ok(ty_any()),
                     _ => {}
@@ -761,7 +782,7 @@ fn infer_value_type(v: &Expr) -> Result<Expr, String> {
         Expr::Number(_) => Ok(ty_num()),
         Expr::Pi(..) => Ok(ty_type()),
         Expr::Sigma(..) => Ok(ty_type()),
-        Expr::Path(body, _) => {
+        Expr::Path(_, _) => {
             // We can't easily re-infer without ty_env, so return a generic path type.
             Ok(ty_path(ty_any()))
         }
@@ -769,7 +790,22 @@ fn infer_value_type(v: &Expr) -> Result<Expr, String> {
         Expr::Glue(..) => Ok(ty_glue(ty_any())),
         Expr::Func(_) | Expr::Lambda(..) | Expr::Macro(..) => Ok(ty_any()),
         Expr::List(l) if l.is_empty() => Ok(ty_any()),
-        Expr::List(_) | Expr::Symbol(_) | Expr::Index(_) => Ok(ty_any()),
+        Expr::List(l) => {
+            if let Some(Expr::Symbol(op)) = l.first() {
+                if op == "__Path__" || op == "__Glue__" {
+                    return Ok(ty_type());
+                }
+            }
+            Ok(ty_any())
+        }
+        Expr::Symbol(s) => {
+            if s == "__Num__" || s == "__Type__" || s == "__Any__" || s == "__GlueType__" {
+                Ok(ty_type())
+            } else {
+                Ok(ty_any())
+            }
+        }
+        Expr::Index(_) => Ok(ty_any()),
     }
 }
 

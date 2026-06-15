@@ -12,6 +12,7 @@ use env::Env;
 use eval::eval;
 use expr::LexEnv;
 use reader::parse_all;
+use std::io::IsTerminal;
 use std::rc::Rc;
 use typechecker::{TyGlobal, typecheck_toplevel};
 
@@ -51,96 +52,143 @@ fn main() -> Result<(), std::io::Error> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() > 1 {
-        // --- File Execution Mode ---
-        let file = std::fs::File::open(&args[1])?;
-        let mut reader = std::io::BufReader::new(file);
-        let mut line_buf = String::new();
+        if args[1] == "--test" {
+            // --- run test suite ---
+            let exprs = [
+                // ----- arithmetic --------------------------------------------------
+                "(define square (lambda (x) (* x x)))",
+                "(square 5)",
+                "(define fact (lambda (n) (if (< n 1) 1 (* n (fact (- n 1))))))",
+                "(fact 10)",
+                "(let ((a 3) (b 4)) (+ (* a a) (* b b)))",
+                // ----- macros -------------------------------------------------------
+                "(defmacro unless (cond then) (list 'if (list 'not cond) then 0))",
+                "(unless 0 (+ 1 2))",
+                "(unless 1 (+ 1 2))",
+                "(defmacro my-or (a b) (list 'if a a b))",
+                "(my-or 0 42)",
+                "(my-or 7 42)",
+                // ----- quasiquote --------------------------------------------------
+                "(define x 10)",
+                "(quasiquote (a b (unquote x)))",
+                "(define lst (list 1 2 3))",
+                "(quasiquote (start (unquote-splicing lst) end))",
+                "'(1 2 3)",
+                "(car '(1 2 3))",
+                "(cdr '(1 2 3))",
+                // ----- interval / path (cubical) ------------------------------------
+                "i0",
+                "i1",
+                "(define interp (path (i) (+ (* (- 1 i) 1) (* i 5))))",
+                "(papply interp i0)",
+                "(papply interp i1)",
+                "(papply interp 0.5)",
+                "(define rp (refl 42))",
+                "(papply rp i0)",
+                "(papply rp i1)",
+                "(papply rp 0.3)",
+                "(path? interp)",
+                "(path? rp)",
+                "(path? 42)",
+                // ----- pi types -----------------------------------------------------
+                "(define arr (pi (x) 0 1))",
+                "(pi? arr)",
+                "(pi? 42)",
+                "(path? arr)",
+                "(define vec-type (pi (n) 0 (* n n)))",
+                "(piapply vec-type 3)",
+                "(piapply vec-type 5)",
+                "(define type-path (path (i) (pi (x) 0 (* x (+ i 1)))))",
+                "(piapply (papply type-path i0) 4)",
+                "(piapply (papply type-path i1) 4)",
+                // ----- sigma types --------------------------------------------------
+                "(define pair-type (sigma (x) 0 1))",
+                "(sigma? pair-type)",
+                "(sigma? 42)",
+                "(define dyn-vec (sigma (len) 0 (* len 10)))",
+                "(sigmacod dyn-vec 3)",
+                "(sigmacod dyn-vec 5)",
+                // ----- glue types ---------------------------------------------------
+                "(define double (lambda (x) (* x 2)))",
+                "(define gt (glue-type 0 double))",
+                "(glue-type? gt)",
+                "(glue-type? 42)",
+                "(define gv (glue 21 double))",
+                "(glue? gv)",
+                "(glue? 42)",
+                "(unglue gv)",
+                "(define gpath (path (i) (glue (* i 10) double)))",
+                "(unglue (papply gpath 0.0))",
+                "(unglue (papply gpath 0.5))",
+                "(unglue (papply gpath 1.0))",
+                // ----- sentinel symbols ---------------------------------------------
+                "__Num__",
+                "__Type__",
+                "__Any__",
+                "__GlueType__",
+                "(__Path__ __Num__)",
+                "(__Glue__ __Num__)",
+                "(define arr2 (pi (x) __Num__ __Num__))",
+                "(define vec-type2 (pi (n) __Num__ (* n n)))",
+                "(piapply vec-type2 3)",
+                // print
+                "(print 'hello_world)",
+            ];
 
-        // Optimize memory by reusing a single line buffer
-        while std::io::BufRead::read_line(&mut reader, &mut line_buf)? > 0 {
-            // Trim trailing newline or whitespace if your parser needs it clean
-            let trimmed = line_buf.trim_end();
-            if !trimmed.is_empty() {
-                run(trimmed, &env, &mut ty_global);
+            for src in &exprs {
+                run(src, &env, &mut ty_global);
             }
-            line_buf.clear(); // Clear the buffer without deallocating capacity
+        } else {
+            // --- File Execution Mode ---
+            let file = std::fs::File::open(&args[1])?;
+            let mut reader = std::io::BufReader::new(file);
+            let mut line_buf = String::new();
+
+            // Optimize memory by reusing a single line buffer
+            while std::io::BufRead::read_line(&mut reader, &mut line_buf)? > 0 {
+                // Trim trailing newline or whitespace if your parser needs it clean
+                let trimmed = line_buf.trim_end();
+                if !trimmed.is_empty() {
+                    run(trimmed, &env, &mut ty_global);
+                }
+                line_buf.clear(); // Clear the buffer without deallocating capacity
+            }
         }
     } else {
-        // --- for test ---
-        // Stack-allocated array slice to avoid unnecessary heap allocations
-        let exprs = [
-            // ----- arithmetic --------------------------------------------------
-            "(define square (lambda (x) (* x x)))",
-            "(square 5)",
-            "(define fact (lambda (n) (if (< n 1) 1 (* n (fact (- n 1))))))",
-            "(fact 10)",
-            "(let ((a 3) (b 4)) (+ (* a a) (* b b)))",
-            // ----- macros -------------------------------------------------------
-            "(defmacro unless (cond then) (list 'if (list 'not cond) then 0))",
-            "(unless 0 (+ 1 2))",
-            "(unless 1 (+ 1 2))",
-            "(defmacro my-or (a b) (list 'if a a b))",
-            "(my-or 0 42)",
-            "(my-or 7 42)",
-            // ----- quasiquote --------------------------------------------------
-            "(define x 10)",
-            "(quasiquote (a b (unquote x)))",
-            "(define lst (list 1 2 3))",
-            "(quasiquote (start (unquote-splicing lst) end))",
-            "'(1 2 3)",
-            "(car '(1 2 3))",
-            "(cdr '(1 2 3))",
-            // ----- interval / path (cubical) ------------------------------------
-            "i0",
-            "i1",
-            "(define interp (path (i) (+ (* (- 1 i) 1) (* i 5))))",
-            "(papply interp i0)",
-            "(papply interp i1)",
-            "(papply interp 0.5)",
-            "(define rp (refl 42))",
-            "(papply rp i0)",
-            "(papply rp i1)",
-            "(papply rp 0.3)",
-            "(path? interp)",
-            "(path? rp)",
-            "(path? 42)",
-            // ----- pi types -----------------------------------------------------
-            "(define arr (pi (x) 0 1))",
-            "(pi? arr)",
-            "(pi? 42)",
-            "(path? arr)",
-            "(define vec-type (pi (n) 0 (* n n)))",
-            "(piapply vec-type 3)",
-            "(piapply vec-type 5)",
-            "(define type-path (path (i) (pi (x) 0 (* x (+ i 1)))))",
-            "(piapply (papply type-path i0) 4)",
-            "(piapply (papply type-path i1) 4)",
-            // ----- sigma types --------------------------------------------------
-            "(define pair-type (sigma (x) 0 1))",
-            "(sigma? pair-type)",
-            "(sigma? 42)",
-            "(define dyn-vec (sigma (len) 0 (* len 10)))",
-            "(sigmacod dyn-vec 3)",
-            "(sigmacod dyn-vec 5)",
-            // ----- glue types ---------------------------------------------------
-            "(define double (lambda (x) (* x 2)))",
-            "(define gt (glue-type 0 double))",
-            "(glue-type? gt)",
-            "(glue-type? 42)",
-            "(define gv (glue 21 double))",
-            "(glue? gv)",
-            "(glue? 42)",
-            "(unglue gv)",
-            "(define gpath (path (i) (glue (* i 10) double)))",
-            "(unglue (papply gpath 0.0))",
-            "(unglue (papply gpath 0.5))",
-            "(unglue (papply gpath 1.0))",
-            // print
-            "(print 'hello_world)",
-        ];
-
-        for src in &exprs {
-            run(src, &env, &mut ty_global);
+        // --- Stdio Mode: REPL or Batch ---
+        use std::io::{stdin, stdout, Write, BufRead};
+        if stdin().is_terminal() {
+            // --- Interactive REPL ---
+            println!("uwulisp interactive REPL. Press Ctrl-D or type 'exit' to exit.");
+            let mut line_buf = String::new();
+            loop {
+                print!("uwulisp> ");
+                stdout().flush()?;
+                line_buf.clear();
+                let bytes_read = stdin().read_line(&mut line_buf)?;
+                if bytes_read == 0 {
+                    // EOF
+                    break;
+                }
+                let trimmed = line_buf.trim();
+                if trimmed == "exit" {
+                    break;
+                }
+                if !trimmed.is_empty() {
+                    run(trimmed, &env, &mut ty_global);
+                }
+            }
+        } else {
+            // --- Batch stdin ---
+            let mut reader = std::io::BufReader::new(stdin());
+            let mut line_buf = String::new();
+            while reader.read_line(&mut line_buf)? > 0 {
+                let trimmed = line_buf.trim_end();
+                if !trimmed.is_empty() {
+                    run(trimmed, &env, &mut ty_global);
+                }
+                line_buf.clear();
+            }
         }
     }
 

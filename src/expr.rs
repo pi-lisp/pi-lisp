@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 /// Core value/expression type for the Lisp evaluator.
 #[derive(Clone)]
@@ -94,7 +94,18 @@ pub fn is_truthy(e: &Expr) -> bool {
     }
 }
 
+/// Returns whether a symbol name is an internal type system sentinel.
+pub fn is_sentinel_symbol(s: &str) -> bool {
+    s == "__Num__"
+        || s == "__Type__"
+        || s == "__Any__"
+        || s == "__GlueType__"
+        || s == "__Path__"
+        || s == "__Glue__"
+}
+
 /// Shared, mutable lexical environment (strong reference).
+
 pub type Env = Rc<std::cell::RefCell<EnvData>>;
 
 

@@ -12,5 +12,5 @@ Make sure you have [Rust and Cargo installed](https://www.rust-lang.org/tools/in
 cargo run
 ```
 
-## syntax
-syntax.md
+## document
+document.md

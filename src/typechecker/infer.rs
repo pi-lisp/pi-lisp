@@ -124,6 +124,8 @@ fn infer_inner(
                     "lambda" => return infer_lambda(list, env, lex_env, ty_global, ty_env),
                     "begin" => return infer_begin(list, env, lex_env, ty_global, ty_env),
                     "let" => return infer_let(list, env, lex_env, ty_global, ty_env),
+                    "letrec" => return infer_letrec(list, env, lex_env, ty_global, ty_env),
+                    "funext" => return infer_funext(list, env, lex_env, ty_global, ty_env),
 
                     "path" => return infer_path(list, env, lex_env, ty_global, ty_env),
                     "papply" => return infer_papply(list, env, lex_env, ty_global, ty_env),
@@ -286,22 +288,106 @@ fn infer_let(
         return Err("type error: let requires bindings and a body".into());
     }
     let mut current_ty_env = ty_env.clone();
+    // Also extend lex_env sequentially so that De Bruijn Index nodes inside
+    // later binding RHSes (and the body) resolve against the correct values.
+    let mut current_lex_env = lex_env.clone();
     if let Expr::List(bindings) = &list[1] {
         for b in bindings {
             if let Expr::List(pair) = b {
                 if pair.len() < 2 {
                     return Err("type error: let binding must be a (name value) pair".into());
                 }
-                let val_ty = infer(&pair[1], env, lex_env, ty_global, &current_ty_env)?;
+                // Infer using the *current* (already-extended) envs.
+                let val_ty = infer(&pair[1], env, &current_lex_env, ty_global, &current_ty_env)?;
+                // Evaluate the RHS so we can push the concrete value into lex_env.
+                let val = eval(&pair[1], env, &current_lex_env)
+                    .unwrap_or(Expr::Symbol("__Any__".into()));
+                current_lex_env = Rc::new(LexEnv::Node(val, current_lex_env));
                 current_ty_env = Rc::new(TyEnv::Node(val_ty, current_ty_env));
             }
         }
     }
     let mut last = ty_any();
     for e in &list[2..] {
-        last = infer(e, env, lex_env, ty_global, &current_ty_env)?;
+        last = infer(e, env, &current_lex_env, ty_global, &current_ty_env)?;
     }
     Ok(last)
+}
+
+fn infer_letrec(
+    list: &[Expr],
+    env: &Env,
+    lex_env: &Rc<LexEnv>,
+    ty_global: &TyGlobal,
+    ty_env: &Rc<TyEnv>,
+) -> Result<Expr, String> {
+    // (letrec ((name val)…) body…)
+    // All names are in scope for all RHSes and the body (mutual recursion).
+    // We pre-populate ty_env with __Any__ for every binding, then infer each
+    // RHS in that extended environment, update the slot, and finally infer the
+    // body.  Because we can't know the real types up-front without annotation
+    // we keep __Any__ as a conservative placeholder throughout.
+    if list.len() < 3 {
+        return Err("type error: letrec requires bindings and a body".into());
+    }
+    let bindings = if let Expr::List(b) = &list[1] { b } else {
+        return Err("type error: letrec bindings must be a list".into());
+    };
+    let n = bindings.len();
+
+    // 1. Extend ty_env and lex_env with __Any__ / placeholder for each binding.
+    let mut extended_ty_env = ty_env.clone();
+    let mut extended_lex_env = lex_env.clone();
+    for _ in 0..n {
+        extended_ty_env = Rc::new(TyEnv::Node(ty_any(), extended_ty_env));
+        extended_lex_env = Rc::new(LexEnv::Node(Expr::Symbol("__Any__".into()), extended_lex_env));
+    }
+
+    // 2. Infer each RHS in the fully-extended environment (best-effort; we
+    //    ignore the refined types since we can't patch the Rc chain in place).
+    for b in bindings {
+        if let Expr::List(pair) = b {
+            if pair.len() >= 2 {
+                let _ = infer(&pair[1], env, &extended_lex_env, ty_global, &extended_ty_env);
+            }
+        }
+    }
+
+    // 3. Infer the body expressions in the same extended environment.
+    let mut last = ty_any();
+    for e in &list[2..] {
+        last = infer(e, env, &extended_lex_env, ty_global, &extended_ty_env)?;
+    }
+    Ok(last)
+}
+
+fn infer_funext(
+    list: &[Expr],
+    env: &Env,
+    lex_env: &Rc<LexEnv>,
+    ty_global: &TyGlobal,
+    ty_env: &Rc<TyEnv>,
+) -> Result<Expr, String> {
+    // (funext f g p)
+    // f g : Π(x:A), B x
+    // p   : Π(x:A), Path(B x) [f x] [g x]   (a pointwise homotopy)
+    // result type: Path (Π(x:A), B x) f g  ≈ __Path__ (Pi A B)
+    //
+    // Without full type annotations we conservatively return __Path__ __Any__.
+    if list.len() != 4 {
+        return Err(
+            "type error: funext expects (funext f g p)".into(),
+        );
+    }
+    let f_ty = infer(&list[1], env, lex_env, ty_global, ty_env)?;
+    let g_ty = infer(&list[2], env, lex_env, ty_global, ty_env)?;
+    infer(&list[3], env, lex_env, ty_global, ty_env)?;
+
+    // If both f and g have the same Pi type, construct the path type over it.
+    if types_equal_normalized(&f_ty, &g_ty, env) && matches!(f_ty, Expr::Pi(..)) {
+        return Ok(ty_path(f_ty));
+    }
+    Ok(ty_path(ty_any()))
 }
 
 fn infer_path(
@@ -484,7 +570,7 @@ fn infer_application(
     // Type-check all arguments; if we know the function is a Pi type,
     // also verify the first argument against the domain.
     match &fn_ty {
-        Expr::Pi(dom, cod, _) => {
+        Expr::Pi(dom, cod, pi_lex) => {
             // Check argument count: a single-Pi covers exactly 1 argument.
             // For curried multi-arg functions we check the first arg against
             // the domain and recurse for the rest.
@@ -493,12 +579,65 @@ fn infer_application(
             }
             // Check first argument against the Pi domain.
             check(&list[1], dom, env, lex_env, ty_global, ty_env)?;
-            // Check remaining args (best-effort — we don't unfold the rest of
-            // the Pi chain here without full curried type info).
-            for arg in &list[2..] {
-                infer(arg, env, lex_env, ty_global, ty_env)?;
+
+            // Substitute the argument value into the codomain for dependent Pi.
+            // Evaluate the argument then extend the Pi's own lex env before
+            // reducing the codomain — this handles open codomains with Index nodes.
+            let instantiated_cod = match eval(&list[1], env, lex_env) {
+                Ok(arg_val) => {
+                    let new_lex = Rc::new(LexEnv::Node(arg_val, pi_lex.clone()));
+                    eval(cod, env, &new_lex).unwrap_or_else(|_| *cod.clone())
+                }
+                Err(_) => *cod.clone(),
+            };
+
+            // If there are more arguments, continue applying to the instantiated
+            // codomain (curried dependent functions).
+            if list.len() == 2 {
+                Ok(instantiated_cod)
+            } else {
+                // Synthesise a new application list with the remaining args and
+                // recurse so each step substitutes correctly.
+                let mut rest = vec![list[0].clone()];
+                rest.extend_from_slice(&list[2..]);
+                // For the recursive step we need the result type of (f arg2 arg3…),
+                // but we don't have a direct expression for the partially-applied
+                // function.  Use a best-effort: infer remaining args and return
+                // instantiated_cod if it's not itself a Pi, or recurse into it.
+                match &instantiated_cod {
+                    Expr::Pi(_, _, _) => {
+                        // Build a synthetic sub-list: [instantiated_cod_as_fn, arg2, …]
+                        // We can't represent a type-as-function here directly, so we
+                        // walk the remaining args, substituting one level at a time.
+                        let mut current_cod = instantiated_cod;
+                        for arg_expr in &list[2..] {
+                            match current_cod {
+                                Expr::Pi(d, c, ref pl) => {
+                                    check(arg_expr, &d, env, lex_env, ty_global, ty_env)?;
+                                    current_cod = match eval(arg_expr, env, lex_env) {
+                                        Ok(v) => {
+                                            let nl = Rc::new(LexEnv::Node(v, pl.clone()));
+                                            eval(&c, env, &nl).unwrap_or(*c)
+                                        }
+                                        Err(_) => *c,
+                                    };
+                                }
+                                _ => {
+                                    infer(arg_expr, env, lex_env, ty_global, ty_env)?;
+                                    current_cod = ty_any();
+                                }
+                            }
+                        }
+                        Ok(current_cod)
+                    }
+                    _ => {
+                        for arg in &list[2..] {
+                            infer(arg, env, lex_env, ty_global, ty_env)?;
+                        }
+                        Ok(instantiated_cod)
+                    }
+                }
             }
-            Ok(*cod.clone())
         }
         _ => {
             // Unknown function type: still type-check all arguments.

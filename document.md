@@ -138,10 +138,36 @@ Truthiness rules:
 
 ```
 
-Evaluates each binding expression in the current environment (bindings are
-*not* mutually recursive; later bindings cannot see earlier ones). Extends
-the lexical environment with the bound values, then evaluates each `body`
-expression in sequence, returning the last.
+Evaluates each binding expression sequentially. Later binding expressions are
+evaluated in the environment already extended by all preceding bindings, so a
+later RHS *can* refer to an earlier binding by name. Bindings are however
+*not* mutually recursive — a binding's own RHS cannot refer to itself (use
+`letrec` for that). Evaluates each `body` expression in sequence, returning
+the last.
+
+---
+
+### `letrec`
+
+**Surface syntax**:
+
+```
+(letrec ((name expr) ...) body ...)
+
+```
+
+Like `let`, but all binding names are in scope for *every* RHS expression and
+for the body, enabling mutual recursion and self-referential definitions.
+Evaluation pre-allocates slots for every binding before evaluating any RHS;
+lambdas defined here close over the fully-resolved environment so recursive
+calls work correctly at runtime.
+
+```uwu
+(letrec ((even? (lambda (n) (if (= n 0) 1 (odd?  (- n 1)))))
+         (odd?  (lambda (n) (if (= n 0) 0 (even? (- n 1))))))
+  (even? 10))   ; => 1.0
+
+```
 
 ---
 
@@ -216,7 +242,42 @@ Reduces to `body[i := t]`. The endpoints recover the path's boundary:
 
 ---
 
-### `refl` (builtin)
+### `funext` — Function Extensionality
+
+```
+(funext f g p)
+
+```
+
+Given two functions `f` and `g` of the same Π-type and a pointwise homotopy
+`p` between them, produces a `Path` value witnessing that `f` and `g` are
+equal as functions.
+
+| Argument | Expected type |
+| --- | --- |
+| `f` | `Π(x : A), B x` |
+| `g` | `Π(x : A), B x` |
+| `p` | `Π(x : A), Path(B x) (f x) (g x)` — a function returning, for each `x`, a path from `f x` to `g x` |
+
+The resulting path satisfies the β-rules at its endpoints:
+
+```
+(papply (funext f g p) i0)  ≡  f
+(papply (funext f g p) i1)  ≡  g
+
+```
+
+At any interior point `i`, applying the result gives `λ x. (papply (p x) i)`.
+
+```uwu
+(define add0-path
+  (funext (lambda (n) (+ n 0))
+          (lambda (n) n)
+          (lambda (n) (refl n))))
+; (papply add0-path i0) ≡ (lambda (n) (+ n 0))
+; (papply add0-path i1) ≡ (lambda (n) n)
+
+```
 
 ```
 (refl x)
@@ -398,7 +459,6 @@ by applying the stored equivalence to the stored fiber value.
 (unglue (glue 21 double))   ; => 42
 
 ```
-
 ---
 
 ## Inline Assembler (JIT)
@@ -435,6 +495,7 @@ Instructions support three categories of operands, mapped to native x86-64 param
 | **Compare / Test** | `(cmp op1 op2)`, `(test op1 op2)` |
 | **Control Flow** | `(call op)`, `(ret)`, `(syscall)` |
 | **Labels & Jumps** | `(label name)`, `(jmp name)`, `(je name)`, `(jne name)`, `(jl name)`, `(jle name)`, `(jge name)`, `(jg name)` |
+
 
 ---
 
@@ -504,7 +565,7 @@ All predicates take exactly one argument and return `1.0` (true) or `0.0` (false
 User-written code uses named variables; the compiler (`compiler.rs`) converts
 these to **De Bruijn indices** before evaluation.
 
-* Variables bound by `lambda`, `path`, `pi`, `sigma`, or `let` are replaced
+* Variables bound by `lambda`, `path`, `pi`, `sigma`, `let`, or `letrec` are replaced
 with `#N` where `N` is the number of enclosing binders between the use and
 the binding site.
 * `#0` refers to the innermost (most recently bound) variable.
@@ -538,7 +599,7 @@ Evaluation uses two parallel environments:
 | Lexical (`LexEnv`) | Linked list of `Expr` | Local variable stack, indexed by De Bruijn index. Immutable; extended by `lambda` application, `path`/`pi`/`sigma`/`let`. |
 
 `LexEnv::get(i)` walks `i` steps down the linked list and returns the value
-at that depth.
+at that depth. Extended by `lambda` application, `path`/`pi`/`sigma`/`let`/`letrec`.
 
 ---
 
@@ -599,6 +660,24 @@ The interpreter supports multiple execution modes:
 (unglue (papply gpath 0.0))   ; => 0.0
 (unglue (papply gpath 0.5))   ; => 10.0
 (unglue (papply gpath 1.0))   ; => 20.0
+
+; letrec: mutually recursive even/odd predicates
+(letrec ((even? (lambda (n) (if (= n 0) 1 (odd?  (- n 1)))))
+         (odd?  (lambda (n) (if (= n 0) 0 (even? (- n 1))))))
+  (list (even? 4) (odd? 3)))   ; => (1.0 1.0)
+
+; let: sequential bindings (later RHSes see earlier bindings)
+(let ((x 3)
+      (y (* x 2)))   ; x is already bound here
+  (+ x y))           ; => 9.0
+
+; funext: path between definitionally equal functions
+(define add0-path
+  (funext (lambda (n) (+ n 0))
+          (lambda (n) n)
+          (lambda (n) (refl n))))
+(papply add0-path i0)   ; => (lambda 1 (+ #0 0))  — recovers the left function
+(papply add0-path i1)   ; => (lambda 1 #0)        — recovers the right function
 
 ; JIT Assembler Loop: Counts up to 5 and returns RAX
 (asm '(

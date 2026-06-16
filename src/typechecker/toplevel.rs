@@ -55,6 +55,54 @@ pub fn typecheck_toplevel(
                     }
                 }
                 "defmacro" => return Ok(ty_any()),
+                "letrec" => {
+                    // Top-level letrec: pre-register all names as __Any__ so
+                    // mutually-recursive bodies can reference each other, then
+                    // infer each RHS and update.
+                    if list.len() < 3 {
+                        return Err("letrec: expected bindings and a body".into());
+                    }
+                    let bindings = if let Expr::List(b) = &list[1] { b } else {
+                        return Err("letrec: bindings must be a list".into());
+                    };
+                    // Pre-register all names.
+                    let mut prev_map = std::collections::HashMap::new();
+                    for b in bindings {
+                        if let Expr::List(pair) = b {
+                            if let Some(Expr::Symbol(name)) = pair.first() {
+                                let prev = ty_global.insert(name.clone(), ty_any());
+                                prev_map.insert(name.clone(), prev);
+                            }
+                        }
+                    }
+                    // Infer and update each binding.
+                    for b in bindings {
+                        if let Expr::List(pair) = b {
+                            if pair.len() >= 2 {
+                                if let Some(Expr::Symbol(name)) = pair.first() {
+                                    match infer(&pair[1], env, &lex_env, ty_global, &ty_env) {
+                                        Ok(ty) => { ty_global.insert(name.clone(), ty); }
+                                        Err(e) => {
+                                            // Rollback all on error.
+                                            for (n, prev) in prev_map {
+                                                match prev {
+                                                    Some(old) => { ty_global.insert(n, old); }
+                                                    None => { ty_global.remove(&n); }
+                                                }
+                                            }
+                                            return Err(e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut last = ty_any();
+                    for e in &list[2..] {
+                        last = typecheck_toplevel(e, env, ty_global)?;
+                    }
+                    return Ok(last);
+                }
                 "begin" => {
                     // Process a top-level begin sequentially so that inner
                     // defines are registered in ty_global as we go.

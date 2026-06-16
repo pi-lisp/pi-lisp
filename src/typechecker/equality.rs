@@ -12,14 +12,27 @@ use crate::eval::eval;
 use crate::expr::{Expr, LexEnv};
 
 /// Attempt to reduce `e` in the given environment (works for closed terms).
-pub fn try_reduce(e: &Expr, env: &Env) -> Expr {
-    eval(e, env, &Rc::new(LexEnv::Empty)).unwrap_or_else(|_| e.clone())
+/// `lex_env` should be the lexical environment in which `e` appears so that
+/// any `Expr::Index` nodes in open type expressions resolve correctly.
+pub fn try_reduce(e: &Expr, env: &Env, lex_env: &Rc<LexEnv>) -> Expr {
+    eval(e, env, lex_env).unwrap_or_else(|_| e.clone())
 }
 
 /// Normalize then compare; falls back to structural equality on error.
 pub fn types_equal_normalized(a: &Expr, b: &Expr, env: &Env) -> bool {
-    let a_nf = try_reduce(a, env);
-    let b_nf = try_reduce(b, env);
+    // Use an empty lex env here: callers that have a richer lex env should
+    // call try_reduce themselves and then use types_equal_structural directly.
+    let empty_lex = Rc::new(LexEnv::Empty);
+    let a_nf = try_reduce(a, env, &empty_lex);
+    let b_nf = try_reduce(b, env, &empty_lex);
+    types_equal_structural(&a_nf, &b_nf)
+}
+
+/// Normalize then compare using the provided lexical environment, so that
+/// open type expressions containing `Expr::Index` nodes reduce correctly.
+pub fn types_equal_normalized_in(a: &Expr, b: &Expr, env: &Env, lex_env: &Rc<LexEnv>) -> bool {
+    let a_nf = try_reduce(a, env, lex_env);
+    let b_nf = try_reduce(b, env, lex_env);
     types_equal_structural(&a_nf, &b_nf)
 }
 

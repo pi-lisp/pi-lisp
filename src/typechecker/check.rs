@@ -3,8 +3,9 @@
 use std::rc::Rc;
 
 use crate::env::Env;
+use crate::eval::eval;
 use crate::expr::{Expr, LexEnv};
-use crate::typechecker::equality::types_equal_normalized;
+use crate::typechecker::equality::{types_equal_normalized, types_equal_normalized_in};
 use crate::typechecker::infer::infer;
 use crate::typechecker::sentinels::{as_path_ty, is_any, ty_num};
 use crate::typechecker::ty_env::{TyEnv, TyGlobal};
@@ -47,7 +48,7 @@ pub fn check(
         return Ok(());
     }
 
-    if types_equal_normalized(&inferred, expected, env) {
+    if types_equal_normalized_in(&inferred, expected, env, lex_env) {
         Ok(())
     } else {
         Err(format!(
@@ -65,14 +66,31 @@ fn check_lambda_against_pi(
     list: &[Expr],
     dom: &Expr,
     cod: &Expr,
-    _pi_lex: &Rc<LexEnv>,
+    pi_lex: &Rc<LexEnv>,
     env: &Env,
     lex_env: &Rc<LexEnv>,
     ty_global: &TyGlobal,
     ty_env: &Rc<TyEnv>,
 ) -> Result<(), String> {
+    // The codomain `cod` may contain De Bruijn indices that are closed over
+    // the Pi's own lexical environment (`pi_lex`).  We need to:
+    //   1. Push the domain type into ty_env so the lambda body's free index
+    //      resolves to the right type.
+    //   2. Use `pi_lex` (not the caller's `lex_env`) as the base when reducing
+    //      `cod`, and extend it with a placeholder for the bound variable.
+    //
+    // We represent the bound variable as a placeholder symbol so that eval
+    // can at least make partial progress on the codomain.
+    let placeholder = Expr::Symbol("__Any__".into());
+    let cod_lex = Rc::new(LexEnv::Node(placeholder, pi_lex.clone()));
+
+    // Reduce the codomain in the Pi's own extended lex env.
+    let instantiated_cod = eval(cod, env, &cod_lex).unwrap_or_else(|_| cod.clone());
+
     let new_ty_env = Rc::new(TyEnv::Node(dom.clone(), ty_env.clone()));
-    check(&list[2], cod, env, lex_env, ty_global, &new_ty_env)
+    // Check the lambda body against the (partially) instantiated codomain,
+    // using the caller's lex_env for the body itself.
+    check(&list[2], &instantiated_cod, env, lex_env, ty_global, &new_ty_env)
 }
 
 fn check_path_against_pathty(

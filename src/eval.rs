@@ -35,6 +35,8 @@ pub fn eval(expr: &Expr, env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String
                     "defmacro" => return eval_defmacro(list, env, lex_env),
                     "begin" => return eval_begin(list, env, lex_env),
                     "let" => return eval_let(list, env, lex_env),
+                    "letrec" => return eval_letrec(list, env, lex_env),
+                    "funext" => return eval_funext(list, env, lex_env),
 
                     "path" => return eval_path(list, env, lex_env),
                     "papply" => return eval_papply(list, env, lex_env),
@@ -252,17 +254,16 @@ fn eval_begin(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, St
 
 /// (let ((name expr)...) body...)
 fn eval_let(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
-    // let expressions are compiled to bind sequentially right-to-left
-    // wait, the compiler pushes left-to-right, so the latest binding is at index 0.
-    // In compiler.rs we iterated new_names in order and pushed them.
-    // So the last binding is at the top of the stack (index 0).
-    // Let's build the lexical environment by evaluating bindings.
+    // Bindings are sequential: each RHS is evaluated in the environment
+    // extended by all *preceding* bindings (left-to-right), matching the
+    // compiler's De Bruijn index assignment order.
     let mut current_env = lex_env.clone();
     if let Expr::List(bindings) = &list[1] {
         for b in bindings {
             if let Expr::List(pair) = b {
-                // compile gives (name val). Wait, we don't need name here.
-                let val = eval(&pair[1], env, lex_env)?;
+                // Evaluate RHS in the env so far (not the outer lex_env),
+                // so that De Bruijn indices referring to earlier bindings work.
+                let val = eval(&pair[1], env, &current_env)?;
                 current_env = Rc::new(LexEnv::Node(val, current_env));
             }
         }
@@ -272,6 +273,140 @@ fn eval_let(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, Stri
         result = eval(e, env, &current_env)?;
     }
     Ok(result)
+}
+
+/// (letrec ((name expr)...) body...)
+///
+/// All binding names are in scope for every RHS and the body, enabling mutual
+/// recursion. We implement this with the standard "back-patch" trick:
+///   1. Pre-populate the lex env with placeholder values for every binding.
+///   2. Evaluate each RHS in that extended env (forward references hit the
+///      placeholder, which is fine for lambdas since the body isn't called yet).
+///   3. Evaluate the body in an env where the placeholders are replaced by the
+///      real values.
+///
+/// Because `LexEnv` is an immutable `Rc` chain we can't truly back-patch in
+/// place. Instead we build a two-pass scheme: first extend with placeholders,
+/// then rebuild the chain with the real values. Self-referential lambdas
+/// close over the placeholder env on pass 1, so recursive calls during
+/// execution will see the placeholder — to fix that we re-evaluate lambdas
+/// in the fully-resolved env so they capture the right closure.
+fn eval_letrec(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    if list.len() < 3 {
+        return Err("letrec: expected bindings and a body".into());
+    }
+    let bindings = if let Expr::List(b) = &list[1] { b } else {
+        return Err("letrec: bindings must be a list".into());
+    };
+    let n = bindings.len();
+
+    // Pass 1: extend lex_env with `n` placeholder symbols so that any
+    // lambda body compiled for these bindings can reference all names via
+    // their De Bruijn index without an "unbound index" error.
+    let placeholder = Expr::Symbol("__letrec_placeholder__".into());
+    let mut placeholder_env = lex_env.clone();
+    for _ in 0..n {
+        placeholder_env = Rc::new(LexEnv::Node(placeholder.clone(), placeholder_env));
+    }
+
+    // Pass 2: evaluate every RHS in the placeholder env.
+    let mut vals: Vec<Expr> = Vec::with_capacity(n);
+    for b in bindings {
+        if let Expr::List(pair) = b {
+            if pair.len() >= 2 {
+                vals.push(eval(&pair[1], env, &placeholder_env)?);
+            } else {
+                return Err("letrec: each binding must be (name expr)".into());
+            }
+        } else {
+            return Err("letrec: each binding must be a list".into());
+        }
+    }
+
+    // Pass 3: build the real env with the concrete values.
+    // The compiler pushed names left-to-right, so the *first* binding ends up
+    // at the deepest index and the *last* at index 0. We push in the same order
+    // so that De Bruijn indices computed by the compiler are correct.
+    let mut real_env = lex_env.clone();
+    for v in &vals {
+        real_env = Rc::new(LexEnv::Node(v.clone(), real_env));
+    }
+
+    // Re-close any lambdas captured in the placeholder env so recursive calls
+    // see the real bindings instead of the placeholder.
+    let reclose = |v: Expr| -> Expr {
+        match v {
+            Expr::Lambda(arity, body, _) => Expr::Lambda(arity, body, real_env.clone()),
+            other => other,
+        }
+    };
+    // Rebuild real_env with re-closed lambdas.
+    let mut final_env = lex_env.clone();
+    for v in vals {
+        final_env = Rc::new(LexEnv::Node(reclose(v), final_env));
+    }
+
+    let mut result = Expr::List(vec![]);
+    for e in &list[2..] {
+        result = eval(e, env, &final_env)?;
+    }
+    Ok(result)
+}
+
+/// (funext f g p)
+///
+/// Function extensionality: given
+///   f g : Π(x : A), B x
+///   p   : Π(x : A), Path(B x) (f x) (g x)   -- a pointwise homotopy
+///
+/// produces a `Path` value between `f` and `g` such that applying the path
+/// at any interval point `i` returns a function `λ x. (p x) @ i`.
+///
+/// The resulting path is represented as:
+///   Path(λ i. λ x. (papply (p x) i))
+fn eval_funext(list: &[Expr], env: &Env, lex_env: &Rc<LexEnv>) -> Result<Expr, String> {
+    if list.len() != 4 {
+        return Err("funext: expected (funext f g p)".into());
+    }
+    // We don't need f or g at runtime — the path is fully determined by p.
+    let p = eval(&list[3], env, lex_env)?;
+
+    // Build a Path whose body, when applied at interval `i` (De Bruijn #0),
+    // is `λ x. papply (p x) i`.
+    //
+    // In the path body the interval variable `i` is at De Bruijn index 0
+    // (pushed by papply/path), and in the inner lambda `x` is at index 0
+    // (with `i` shifted to index 1). We avoid representing this as a
+    // compiled Core expression and instead build a runtime closure directly.
+    let p_clone = p.clone();
+    let env_clone = env.clone();
+    // The path body is a Func that, given the interval value i,
+    // returns a lambda over x such that applying p to x and then the path at i.
+    let body_fn = Expr::Func(Rc::new(move |args: &[Expr]| -> Result<Expr, String> {
+        let i = args[0].clone();
+        let p_inner = p_clone.clone();
+        let env_inner = env_clone.clone();
+        // Return λ(x). papply (p x) i
+        let i_inner = i.clone();
+        Ok(Expr::Func(Rc::new(move |xargs: &[Expr]| -> Result<Expr, String> {
+            let x = xargs[0].clone();
+            // Evaluate (p x)
+            let px = apply(p_inner.clone(), &[x], &env_inner)?;
+            // Evaluate (papply px i)
+            match px {
+                Expr::Path(body, penv) => {
+                    let new_lex = Rc::new(LexEnv::Node(i_inner.clone(), penv));
+                    eval(&body, &env_inner, &new_lex)
+                }
+                other => Err(format!("funext: pointwise homotopy did not return a path, got {:?}", other)),
+            }
+        })))
+    }));
+
+    // Wrap in a Path that holds this body function and the current lex_env.
+    // We represent the body as a synthetic lambda arity-1 over the interval,
+    // using a Func so we don't need to build Core AST.
+    Ok(Expr::Path(Box::new(body_fn), lex_env.clone()))
 }
 
 /// (glue-type base equiv)

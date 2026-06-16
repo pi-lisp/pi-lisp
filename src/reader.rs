@@ -57,15 +57,23 @@ pub fn parse_all(src: &str) -> Result<Vec<Expr>, String> {
 }
 
 /// Convenience helper: parses params list `(a b c)` into Vec<String>.
+/// Returns an error if any element is not a symbol, so callers get a clear
+/// diagnostic instead of a silently-empty string that corrupts arity counts
+/// for curried lambdas compiled with De Bruijn indices.
 pub fn parse_params(e: &Expr) -> Result<Vec<String>, String> {
     if let Expr::List(p) = e {
-        Ok(p
-            .iter()
+        p.iter()
             .map(|e| match e {
-                Expr::Symbol(s) => s.clone(),
-                _ => String::new(),
+                Expr::Symbol(s) => Ok(s.clone()),
+                other => Err(format!(
+                    "parse_params: expected symbol in parameter list, got {:?}",
+                    other
+                )),
             })
-            .collect())
+            .collect()
+    } else if let Expr::Symbol(s) = e {
+        // Allow a bare symbol as a single-param shorthand: (lambda x body)
+        Ok(vec![s.clone()])
     } else {
         Ok(vec![])
     }

@@ -1,8 +1,1 @@
-try reuse octo
-
-interval.hs -- done
-syntax.hs -- done
-eval.hs -- done
-equality.hs -- done
-typechecker.hs -- done
-env.hs
+need combine cubical and lisp interpreter

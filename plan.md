@@ -1,8 +1,10 @@
 bug fix
 
+add beta reduction
+
 update
 
-update eval.rs
+add beta reduction
 
 add import
 add comment support

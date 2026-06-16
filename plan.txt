@@ -1,11 +1,8 @@
-update
+try reuse octo
 
-add universe type
-add kan operation
-
-final goal calculate univalence axiom
-
-add import
-add comment support
-
-I placed the high-priority items on top.
+interval.hs -- done
+syntax.hs -- done
+eval.hs -- done
+equality.hs -- done
+typechecker.hs -- done
+env.hs

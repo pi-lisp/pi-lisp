@@ -177,23 +177,3 @@ fn neg_lit(l: &Literal) -> Literal {
         Literal::NegVar(n) => Literal::Pos(*n),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Quick smoke test (optional — remove or gate behind #[cfg(test)])
-// ---------------------------------------------------------------------------
-
-fn main() {
-    // Build  (i0 ∧ i1) ∨ ¬i0
-    let expr = I::Join(
-        Box::new(I::Meet(Box::new(I::IVar(0)), Box::new(I::IVar(1)))),
-        Box::new(I::Neg(Box::new(I::IVar(0)))),
-    );
-
-    println!("Expression : {}", expr);
-    println!("DNF        : {}", eval_interval(&expr));
-
-    println!("top        : {}", dnf_top());
-    println!("bot        : {}", dnf_bot());
-    println!("¬top       : {}", dnf_neg(&dnf_top()));
-    println!("¬bot       : {}", dnf_neg(&dnf_bot()));
-}

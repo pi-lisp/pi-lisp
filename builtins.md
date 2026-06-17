@@ -49,6 +49,12 @@ Divides the first number by each subsequent number.
 
 Requires at least one argument. Raises an error on division by zero.
 
+### `%`
+modulo operator
+(% 3 2) → Number
+
+Requires two argument and return Number
+
 ---
 
 ## Comparisons

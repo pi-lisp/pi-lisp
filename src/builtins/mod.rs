@@ -44,6 +44,7 @@ pub fn global_env() -> Env {
     utils::register_misc(&env);
     cubical::register_cubical(&env);
     asm::register_assembler(&env);
+    asm::register_load_asm(&env);
 
     env
 }

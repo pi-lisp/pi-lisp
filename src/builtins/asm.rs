@@ -2,6 +2,7 @@
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
+use std::fs;
 use std::rc::Rc;
 
 use crate::{env::{Env, env_set}, expr::Expr, tinyasm::{Assembler, Instruction, JitMemory, MemoryAddr, Operand, Register}};
@@ -108,6 +109,234 @@ fn parse_unary(
         return Err(format!("{}: expects 1 operand", mnemonic));
     }
     Ok(make(parse_operand(&parts[1])?))
+}
+
+// ---------------------------------------------------------------------------
+// NASM-style text parsing helpers (used by `load-asm`)
+// ---------------------------------------------------------------------------
+
+/// Parse a single raw token from a NASM-style source line into an `Operand`.
+///
+/// Supported token forms:
+/// - `rax`, `r8`, …                      → `Operand::Reg`
+/// - decimal integer, e.g. `42`, `-7`    → `Operand::Imm32`
+/// - hex integer, e.g. `0xff`, `0xFF`    → `Operand::Imm32`
+/// - `[rax]`, `[rax+8]`, `[rax-8]`      → `Operand::Mem`
+fn parse_text_operand(token: &str) -> Result<Operand, String> {
+    let token = token.trim();
+
+    // Memory reference: [base] or [base+disp] or [base-disp]
+    if token.starts_with('[') && token.ends_with(']') {
+        let inner = &token[1..token.len() - 1];
+
+        // Split on the first '+' or '-', keeping sign on the displacement.
+        let (base_str, disp) = if let Some(pos) = inner.find('+') {
+            let disp_str = inner[pos + 1..].trim();
+            let d = parse_integer(disp_str).map_err(|e| format!("mem displacement: {}", e))?;
+            (&inner[..pos], d)
+        } else if let Some(pos) = inner.rfind('-') {
+            // rfind so we don't accidentally split a negative-only value like [-8]
+            if pos == 0 {
+                // Entire inner is a negative number with no base register.
+                let d = parse_integer(inner).map_err(|e| format!("mem displacement: {}", e))?;
+                return Ok(Operand::Mem(MemoryAddr {
+                    base: None,
+                    index: None,
+                    scale: 1,
+                    disp: d,
+                }));
+            }
+            let disp_str = inner[pos..].trim(); // includes the '-'
+            let d = parse_integer(disp_str).map_err(|e| format!("mem displacement: {}", e))?;
+            (&inner[..pos], d)
+        } else {
+            (inner, 0i32)
+        };
+
+        let base_str = base_str.trim();
+        if base_str.is_empty() {
+            return Ok(Operand::Mem(MemoryAddr {
+                base: None,
+                index: None,
+                scale: 1,
+                disp,
+            }));
+        }
+
+        let base = parse_register(base_str)?;
+        return Ok(Operand::Mem(MemoryAddr::base_disp(base, disp)));
+    }
+
+    // Try as a register first.
+    if let Ok(reg) = parse_register(token) {
+        return Ok(Operand::Reg(reg));
+    }
+
+    // Otherwise treat as an integer immediate.
+    let n = parse_integer(token)?;
+    Ok(Operand::Imm32(n))
+}
+
+/// Parse a decimal or hexadecimal integer string into an `i32`.
+fn parse_integer(s: &str) -> Result<i32, String> {
+    let s = s.trim();
+    let (neg, s) = if let Some(rest) = s.strip_prefix('-') {
+        (true, rest.trim())
+    } else {
+        (false, s)
+    };
+
+    let abs: i64 = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).map_err(|_| format!("invalid hex integer: '{}'", s))?
+    } else {
+        s.parse::<i64>()
+            .map_err(|_| format!("invalid integer: '{}'", s))?
+    };
+
+    let value = if neg { -abs } else { abs };
+    if value < i32::MIN as i64 || value > i32::MAX as i64 {
+        return Err(format!(
+            "immediate {} is out of i32 range; use Imm64 for large constants",
+            value
+        ));
+    }
+    Ok(value as i32)
+}
+
+/// Split a NASM-style line into `(mnemonic, [operand_token, …])`, stripping
+/// inline comments (`;` to end-of-line) and ignoring blank lines.
+///
+/// Operands are comma-separated.  Size hints like `QWORD PTR` are dropped.
+fn tokenize_line(line: &str) -> Option<(String, Vec<String>)> {
+    // Strip inline comment.
+    let line = match line.split_once(';') {
+        Some((before, _)) => before,
+        None => line,
+    };
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    let mut parts = line.splitn(2, char::is_whitespace);
+    let mnemonic = parts.next()?.trim().to_lowercase();
+    if mnemonic.is_empty() {
+        return None;
+    }
+
+    let operand_src = parts.next().unwrap_or("").trim();
+
+    // Drop NASM size hints like "QWORD PTR", "DWORD PTR", etc.
+    let operand_src = {
+        let upper = operand_src.to_uppercase();
+        if upper.contains("PTR") {
+            // Remove the size keyword and "PTR" leaving only the bracket expression.
+            let after_ptr = upper
+                .find("PTR")
+                .map(|i| &operand_src[i + 3..])
+                .unwrap_or(operand_src)
+                .trim();
+            after_ptr.to_owned()
+        } else {
+            operand_src.to_owned()
+        }
+    };
+
+    let operands: Vec<String> = if operand_src.is_empty() {
+        vec![]
+    } else {
+        operand_src
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+
+    Some((mnemonic, operands))
+}
+
+/// Parse one NASM-style text line into an `Instruction`.
+///
+/// Label lines are detected by a trailing colon, e.g. `loop:`.
+/// All other lines use the standard mnemonic + operand forms.
+fn parse_text_instruction(line: &str) -> Result<Option<Instruction>, String> {
+    let line = line.trim();
+
+    // Label definition: "name:"
+    if let Some(name) = line.strip_suffix(':') {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("empty label name".into());
+        }
+        return Ok(Some(Instruction::Label(name.to_owned())));
+    }
+
+    let Some((mnemonic, ops)) = tokenize_line(line) else {
+        return Ok(None); // blank or comment-only line
+    };
+
+    // Helper closures for operand-count checking.
+    let need = |n: usize| -> Result<(), String> {
+        if ops.len() != n {
+            Err(format!(
+                "{}: expects {} operand(s), got {}",
+                mnemonic,
+                n,
+                ops.len()
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    let op = |i: usize| parse_text_operand(&ops[i]);
+
+    let instr = match mnemonic.as_str() {
+        // --- Data movement ---
+        "mov" => { need(2)?; Instruction::Mov(op(0)?, op(1)?) }
+        "lea" => { need(2)?; Instruction::Lea(op(0)?, op(1)?) }
+        "push" => { need(1)?; Instruction::Push(op(0)?) }
+        "pop"  => { need(1)?; Instruction::Pop(op(0)?) }
+
+        // --- Arithmetic ---
+        "add"  => { need(2)?; Instruction::Add(op(0)?, op(1)?) }
+        "sub"  => { need(2)?; Instruction::Sub(op(0)?, op(1)?) }
+        "imul" => { need(2)?; Instruction::IMul(op(0)?, op(1)?) }
+        "mul"  => { need(1)?; Instruction::Mul(op(0)?) }
+        "div"  => { need(1)?; Instruction::Div(op(0)?) }
+
+        // --- Bitwise / shift ---
+        "and" => { need(2)?; Instruction::And(op(0)?, op(1)?) }
+        "or"  => { need(2)?; Instruction::Or(op(0)?, op(1)?) }
+        "xor" => { need(2)?; Instruction::Xor(op(0)?, op(1)?) }
+        "not" => { need(1)?; Instruction::Not(op(0)?) }
+        "shl" => { need(2)?; Instruction::Shl(op(0)?, op(1)?) }
+        "shr" => { need(2)?; Instruction::Shr(op(0)?, op(1)?) }
+
+        // --- Compare / test ---
+        "cmp"  => { need(2)?; Instruction::Cmp(op(0)?, op(1)?) }
+        "test" => { need(2)?; Instruction::Test(op(0)?, op(1)?) }
+
+        // --- Control flow ---
+        "call"    => { need(1)?; Instruction::Call(op(0)?) }
+        "ret"     => { need(0)?; Instruction::Ret }
+        "syscall" => { need(0)?; Instruction::Syscall }
+
+        // --- Jumps ---
+        "jmp" => { need(1)?; Instruction::JmpLabel(ops[0].clone()) }
+        "je"  => { need(1)?; Instruction::JeLabel(ops[0].clone()) }
+        "jne" => { need(1)?; Instruction::JneLabel(ops[0].clone()) }
+        "jl"  => { need(1)?; Instruction::JlLabel(ops[0].clone()) }
+        "jle" => { need(1)?; Instruction::JleLabel(ops[0].clone()) }
+        "jge" => { need(1)?; Instruction::JgeLabel(ops[0].clone()) }
+        "jg"  => { need(1)?; Instruction::JgLabel(ops[0].clone()) }
+
+        // NASM section/global directives — silently ignored.
+        "section" | "global" | "extern" | "bits" | "default" => return Ok(None),
+
+        other => return Err(format!("load-asm: unsupported instruction '{}'", other)),
+    };
+
+    Ok(Some(instr))
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +559,105 @@ pub fn register_assembler(env: &Env) {
                 let f = jit
                     .as_fn()
                     .map_err(|e| format!("JIT fn pointer failed: {}", e))?;
+                f()
+            };
+            Ok(Expr::Number(result as f64))
+        })),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `load-asm` built-in
+// ---------------------------------------------------------------------------
+
+/// Register the `load-asm` built-in function into `env`.
+///
+/// Usage from Lisp:
+/// ```lisp
+/// (load-asm "path/to/program.asm")
+/// ```
+///
+/// The file is expected to contain NASM-style x86-64 assembly text, for example:
+/// ```asm
+/// ; count from 0 to 4, return 5 in rax
+///     mov rax, 0
+/// loop:
+///     add rax, 1
+///     cmp rax, 5
+///     jne loop
+///     ret
+/// ```
+///
+/// Supported syntax:
+/// - Labels defined with a trailing colon (`loop:`)
+/// - Jump targets as bare label names (`jne loop`)
+/// - Operands: registers (`rax`), immediate decimals/hex (`42`, `0xff`),
+///   and memory references (`[rax]`, `[rax+8]`, `[rbp-16]`)
+/// - Inline comments starting with `;`
+/// - NASM directives `section`, `global`, `extern`, `bits`, `default`
+///   are silently ignored
+///
+/// Returns the value left in RAX after execution as a Lisp `Number`.
+pub fn register_load_asm(env: &Env) {
+    env_set(
+        env,
+        "load-asm".into(),
+        Expr::Func(Rc::new(|args| {
+            if args.len() != 1 {
+                return Err("load-asm: expects exactly 1 argument (filename string)".into());
+            }
+
+            // Extract the filename from a Lisp string or symbol.
+            let filename = match &args[0] {
+                Expr::Str(s) => s.clone(),
+                Expr::Symbol(s) => s.clone(),
+                other => {
+                    return Err(format!(
+                        "load-asm: filename must be a string, got {:?}",
+                        other
+                    ))
+                }
+            };
+
+            // Read the file.
+            let source = fs::read_to_string(&filename)
+                .map_err(|e| format!("load-asm: cannot read '{}': {}", filename, e))?;
+
+            // Parse each line into instructions.
+            let mut asm = Assembler::new();
+            for (line_no, raw_line) in source.lines().enumerate() {
+                match parse_text_instruction(raw_line) {
+                    Ok(Some(instr)) => asm.add_instruction(instr),
+                    Ok(None) => {} // blank / comment / directive
+                    Err(e) => {
+                        return Err(format!(
+                            "load-asm: parse error in '{}' at line {}: {}",
+                            filename,
+                            line_no + 1,
+                            e
+                        ))
+                    }
+                }
+            }
+
+            // Assemble to machine code.
+            let code = asm
+                .assemble()
+                .map_err(|e| format!("load-asm: assembly error: {}", e))?;
+
+            // Allocate executable memory, write the code, flip permissions.
+            let mut jit = JitMemory::new(code.len())
+                .map_err(|e| format!("load-asm: JIT allocation failed: {}", e))?;
+            jit.write(&code)
+                .map_err(|e| format!("load-asm: JIT write failed: {}", e))?;
+            jit.make_executable()
+                .map_err(|e| format!("load-asm: JIT mprotect failed: {}", e))?;
+
+            // Execute and return RAX as a Lisp Number.
+            let result = unsafe {
+                let f = jit
+                    .as_fn()
+                    .map_err(|e| format!("load-asm: JIT fn pointer failed: {}", e))?;
                 f()
             };
             Ok(Expr::Number(result as f64))

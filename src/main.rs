@@ -98,14 +98,15 @@ fn main() {
     if args.len() < 2 {
         repl(&env);
     } else {
-        let file_path = &args[1];
-        let src = match fs::read_to_string(file_path) {
-            Ok(content) => content,
-            Err(err) => {
-                eprintln!("An error occurred while reading the file '{}': {}", file_path, err);
-                process::exit(1);
-            }
-        };
-        run(&src, &env);
+        for file_path in &args[1..] {
+            let src = match fs::read_to_string(file_path) {
+                Ok(content) => content,
+                Err(err) => {
+                    eprintln!("An error occurred while reading the file '{}': {}", file_path, err);
+                    process::exit(1);
+                }
+            };
+            run(&src, &env);
+        }
     }
 }

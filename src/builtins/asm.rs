@@ -4,6 +4,8 @@
 
 use std::fs;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::thread;
 
 use crate::{env::{Env, env_set}, expr::Expr, gc::Heap, tinyasm::{Assembler, Instruction, JitMemory, MemoryAddr, Operand, Register}};
 
@@ -663,6 +665,121 @@ pub fn register_load_asm(env: Env, heap: &mut Heap) {
                 f()
             };
             Ok(Expr::Number(result as f64))
+        })),
+    );
+}
+
+pub fn register_load_asm_parallel(env: Env, heap: &mut Heap) {
+    env_set(
+        heap,
+        env,
+        "load-asm-parallel".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 1 {
+                return Err(
+                    "load-asm-parallel: expects exactly 1 argument (list of filename strings)"
+                        .into(),
+                );
+            }
+
+            let Expr::List(filename_exprs) = &args[0] else {
+                return Err(
+                    "load-asm-parallel: argument must be a list of filename strings".into(),
+                );
+            };
+
+            // Collect filenames eagerly so we can move them into threads.
+            let filenames: Vec<String> = filename_exprs
+                .iter()
+                .map(|e| match e {
+                    Expr::Str(s) | Expr::Symbol(s) => Ok(s.clone()),
+                    other => Err(format!(
+                        "load-asm-parallel: filename must be a string, got {:?}",
+                        other
+                    )),
+                })
+                .collect::<Result<_, _>>()?;
+
+            // Spawn one thread per file.  Each thread: read → parse → assemble → JIT-exec.
+            // `JitMemory: Send` so it can be created and executed on the worker thread.
+            let handles: Vec<thread::JoinHandle<Result<u64, String>>> = filenames
+                .into_iter()
+                .map(|filename| {
+                    thread::spawn(move || -> Result<u64, String> {
+                        // ── read ──────────────────────────────────────────
+                        let source = fs::read_to_string(&filename).map_err(|e| {
+                            format!("load-asm-parallel: cannot read '{}': {}", filename, e)
+                        })?;
+
+                        // ── parse ─────────────────────────────────────────
+                        let mut asm = Assembler::new();
+                        for (line_no, raw_line) in source.lines().enumerate() {
+                            match parse_text_instruction(raw_line) {
+                                Ok(Some(instr)) => asm.add_instruction(instr),
+                                Ok(None) => {}
+                                Err(e) => {
+                                    return Err(format!(
+                                        "load-asm-parallel: parse error in '{}' at line {}: {}",
+                                        filename,
+                                        line_no + 1,
+                                        e
+                                    ))
+                                }
+                            }
+                        }
+
+                        // ── assemble ──────────────────────────────────────
+                        let code = asm.assemble().map_err(|e| {
+                            format!("load-asm-parallel: assembly error in '{}': {}", filename, e)
+                        })?;
+
+                        // ── JIT: write → mprotect → execute ───────────────
+                        // JitMemory is created, owned, and executed entirely
+                        // on this worker thread — no sharing required.
+                        let mut jit = JitMemory::new(code.len()).map_err(|e| {
+                            format!(
+                                "load-asm-parallel: JIT allocation failed for '{}': {}",
+                                filename, e
+                            )
+                        })?;
+                        jit.write(&code).map_err(|e| {
+                            format!(
+                                "load-asm-parallel: JIT write failed for '{}': {}",
+                                filename, e
+                            )
+                        })?;
+                        jit.make_executable().map_err(|e| {
+                            format!(
+                                "load-asm-parallel: JIT mprotect failed for '{}': {}",
+                                filename, e
+                            )
+                        })?;
+
+                        let result = unsafe {
+                            let f = jit.as_fn().map_err(|e| {
+                                format!(
+                                    "load-asm-parallel: JIT fn pointer failed for '{}': {}",
+                                    filename, e
+                                )
+                            })?;
+                            f()
+                        };
+                        Ok(result)
+                    })
+                })
+                .collect();
+
+            // Join all threads, preserving order, propagating first error.
+            let results: Vec<Expr> = handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .map_err(|_| "load-asm-parallel: worker thread panicked".to_string())?
+                        .map(|n| Expr::Number(n as f64))
+                })
+                .collect::<Result<_, _>>()?;
+
+            Ok(Expr::List(results))
         })),
     );
 }

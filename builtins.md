@@ -781,6 +781,11 @@ Reads, parses, assembles, and JIT-executes an external NASM-style x86-64 assembl
 ```
 (load-asm filename)  →  Number
 ```
+StringList is list of filename strings
+
+```
+(load-asm-parallel StringList) -> (list)
+```
 
 `instructions` must be a list of instruction lists. Each instruction list begins with a mnemonic symbol followed by its operands. The assembled machine code is written to executable memory and called immediately; the `i64` value in `RAX` at the time of `ret` is returned as a Lisp `Number` (cast to `f64`).
 

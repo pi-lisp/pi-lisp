@@ -49,6 +49,7 @@ pub fn global_env(heap: &mut Heap) -> Env {
     base::register_arithmetic(env, heap);
     base::register_comparisons(env, heap);
     base::register_lists(env, heap);
+    base::register_higher_order(env, heap);
     utils::register_strings(env, heap);
     utils::register_misc(env, heap);
     utils::register_file(env, heap);

@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use crate::builtins::num;
 use crate::env::{Env, env_set};
+use crate::eval::apply;
 use crate::expr::{Expr, is_truthy};
 use crate::gc::Heap;
 
@@ -187,6 +188,81 @@ pub fn register_lists(env: Env, heap: &mut Heap) {
         Expr::Func(Rc::new(|args, _heap| match &args[0] {
             Expr::List(l) => Ok(Expr::Number(if l.is_empty() { 1.0 } else { 0.0 })),
             _             => Ok(Expr::Number(0.0)),
+        })),
+    );
+}
+
+pub fn register_higher_order(env: Env, heap: &mut Heap) {
+    // `apply` needs a `call_site_env` to use as a GC root while the call is
+    // in flight (see eval.rs). It does NOT affect scoping — a `Lambda`
+    // always runs in its own captured `closure_env` — so it's safe to use
+    // the env these builtins were registered into as that root for every
+    // call made through them, regardless of where `map`/`filter`/`fold`
+    // are actually invoked from.
+
+    env_set(
+        heap,
+        env,
+        "map".into(),
+        Expr::Func(Rc::new(move |args, heap| {
+            if args.len() != 2 {
+                return Err("map: expects exactly 2 arguments (f list)".into());
+            }
+            let f = args[0].clone();
+            let list = match &args[1] {
+                Expr::List(l) => l,
+                other => return Err(format!("map: not a list: {:?}", other)),
+            };
+            let mut result = Vec::with_capacity(list.len());
+            for item in list {
+                result.push(apply(f.clone(), &[item.clone()], env, heap)?);
+            }
+            Ok(Expr::List(result))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "filter".into(),
+        Expr::Func(Rc::new(move |args, heap| {
+            if args.len() != 2 {
+                return Err("filter: expects exactly 2 arguments (pred list)".into());
+            }
+            let pred = args[0].clone();
+            let list = match &args[1] {
+                Expr::List(l) => l,
+                other => return Err(format!("filter: not a list: {:?}", other)),
+            };
+            let mut result = Vec::new();
+            for item in list {
+                let keep = apply(pred.clone(), &[item.clone()], env, heap)?;
+                if is_truthy(&keep) {
+                    result.push(item.clone());
+                }
+            }
+            Ok(Expr::List(result))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "fold".into(),
+        Expr::Func(Rc::new(move |args, heap| {
+            if args.len() != 3 {
+                return Err("fold: expects exactly 3 arguments (f init list)".into());
+            }
+            let f = args[0].clone();
+            let mut acc = args[1].clone();
+            let list = match &args[2] {
+                Expr::List(l) => l,
+                other => return Err(format!("fold: not a list: {:?}", other)),
+            };
+            for item in list {
+                acc = apply(f.clone(), &[acc, item.clone()], env, heap)?;
+            }
+            Ok(acc)
         })),
     );
 }

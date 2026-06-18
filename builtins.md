@@ -510,10 +510,12 @@ No arguments.
 A term-level lambda abstraction.
 
 ```
-(lambda name body)  →  TAbs(name, body)
+(clambda name body)  →  TAbs(name, body)
 ```
 
 `name` must be a symbol; `body` must be a cubical term.
+
+use clambda for prevent variable shadowinig
 
 ---
 

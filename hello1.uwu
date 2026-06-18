@@ -1,5 +1,28 @@
-(define is-even?
-  (lambda (n)
-    (if (= (% n 2) 0) 1 0)))
+;; ========================================================================
+;; Cubical Type Theory - Function Extensionality (funext) 증명
+;; ========================================================================
 
-(is-even? 1000000)
+;; funext 자체는 Lisp의 일반 함수이므로 매개변수에 괄호를 사용합니다.
+(define funext
+  (lambda (A)
+    (lambda (B)
+      (lambda (f)
+        (lambda (g)
+          (lambda (p)
+            ;; path-lambda는 일반 내장 함수이므로 이름 뒤에 '를 붙여 기호로 전달합니다.
+            (path-lambda 'i
+              (lambda (x)
+                ;; app, path-app, interval-var 모두 일반 내장 함수입니다.
+                (path-app (app p x) (interval-var 'i))))))))))
+
+;; 1. 인자 정의하기
+(define A (interval-type))
+(define B (lambda (x) (interval-type)))
+(define f (lambda (x) x))
+(define g (lambda (x) x))
+
+;; p는 x를 받아서 'i 축에 대한 경로(Path Lambda)를 생성하는 큐비컬 함수입니다.
+(define p (lambda (x) (path-lambda 'i x)))
+
+;; 2. 이제 funext를 안전하게 호출합니다!
+(((((funext A) B) f) g) p)

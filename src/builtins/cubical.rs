@@ -209,7 +209,7 @@ pub fn register_cubical(env: Env, heap: &mut Heap) {
     env_set(
         heap,
         env,
-        "lambda".into(),
+        "clambda".into(),
         Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 2 {
                 return Err("lambda: expects (lambda name body)".into());

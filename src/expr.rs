@@ -63,7 +63,7 @@ impl fmt::Debug for Expr {
             Expr::Func(_)        => write!(f, "<builtin>"),
             Expr::Lambda(..)     => write!(f, "<lambda>"),
             Expr::Macro(..)      => write!(f, "<macro>"),
-            Expr::CubicalTerm(t) => write!(f, "<ctt:{}>", t),
+            Expr::CubicalTerm(t) => write!(f, "<cubical:{}>", t),
         }
     }
 }

@@ -9,11 +9,12 @@ mod macros;
 mod reader;
 mod tinyasm;
 
-use eval::eval;
+use eval::{eval, with_import_base};
 use gc::{GcHandle, Heap};
 use reader::parse_all;
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process;
 
 use crate::helper::shared_read_line;
@@ -119,7 +120,8 @@ fn main() {
                     process::exit(1);
                 }
             };
-            run(&src, global_env, &mut heap);
+            let base = Path::new(file_path).parent();
+            with_import_base(base, || run(&src, global_env, &mut heap));
         }
     }
 }

@@ -161,7 +161,10 @@ pub fn require_equal(ctx: &Ctx, expected: &Term, got: &Term) -> Result<(), TypeE
     match definitionally_equal_ctx_r(ctx, expected, got) {
         EtaResult::Equal => Ok(()),
         EtaResult::NotEqual => Err(TypeError::TypeMismatch(nbe_eval(expected), nbe_eval(got))),
-        EtaResult::Exhausted => Err(TypeError::EtaFuelExhausted(nbe_eval(expected), nbe_eval(got))),
+        EtaResult::Exhausted => Err(TypeError::EtaFuelExhausted(
+            nbe_eval(expected),
+            nbe_eval(got),
+        )),
     }
 }
 
@@ -182,7 +185,10 @@ pub fn require_equal_endpt(ctx: &Ctx, expected: &Term, got: &Term) -> Result<(),
                 nbe_eval(got),
             )))
         }
-        EtaResult::Exhausted => Err(TypeError::EtaFuelExhausted(nbe_eval(expected), nbe_eval(got))),
+        EtaResult::Exhausted => Err(TypeError::EtaFuelExhausted(
+            nbe_eval(expected),
+            nbe_eval(got),
+        )),
     }
 }
 
@@ -727,7 +733,10 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                     match nbe_eval(&tube_ty) {
                         Term::TPath(a, u, v) => {
                             if !definitionally_equal_ctx_r(ctx, &nbe_eval(&a), &a_ty_).is_equal() {
-                                return Err(TypeError::TypeMismatch(nbe_eval(&a_ty_), nbe_eval(&a)));
+                                return Err(TypeError::TypeMismatch(
+                                    nbe_eval(&a_ty_),
+                                    nbe_eval(&a),
+                                ));
                             }
                             check(ctx, &nbe_eval(&u), &a_ty_)?;
                             check(ctx, &nbe_eval(&v), &a_ty_)?;
@@ -1070,9 +1079,12 @@ pub fn check_dt(dts: &[Datatype], ctx: &Ctx, t: &Term, ty: &Term) -> Result<(), 
     match t {
         // Lambda introduction
         Term::TAbs(x, body) => match nbe_eval(ty) {
-            Term::TPi(_, a_ty, b_ty) => {
-                check_dt(dts, &extend_ctx(x.clone(), nbe_eval(&a_ty), ctx), body, &b_ty)
-            }
+            Term::TPi(_, a_ty, b_ty) => check_dt(
+                dts,
+                &extend_ctx(x.clone(), nbe_eval(&a_ty), ctx),
+                body,
+                &b_ty,
+            ),
             other => Err(TypeError::ExpectedPi(other)),
         },
 

@@ -1,12 +1,19 @@
 use crate::env::{Env, env_get, env_set, new_env};
 use crate::expr::{Expr, is_truthy};
-use crate::gc::{GcHandle, Heap};
+use crate::gc::Heap;
 use crate::macros::{eval_quasiquote, expand_macro};
-use crate::reader::parse_params;
+use crate::reader::{parse_all, parse_params};
+use std::cell::RefCell;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 // How many live heap slots we allow before triggering a collection inside
 // `apply`.  Tune this to trade GC frequency against peak memory use.
 const GC_THRESHOLD: usize = 1024;
+
+thread_local! {
+    static IMPORT_BASES: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
 
 // ── trampoline ────────────────────────────────────────────────────────────────
 
@@ -72,6 +79,20 @@ pub fn eval(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Expr, String> {
                 cur_env = env;
             }
         }
+    }
+}
+
+/// Temporarily adds a base directory used to resolve relative import paths.
+pub fn with_import_base<T>(base: Option<&Path>, f: impl FnOnce() -> T) -> T {
+    if let Some(base) = base {
+        IMPORT_BASES.with(|bases| bases.borrow_mut().push(base.to_path_buf()));
+        let result = f();
+        IMPORT_BASES.with(|bases| {
+            bases.borrow_mut().pop();
+        });
+        result
+    } else {
+        f()
     }
 }
 
@@ -150,6 +171,7 @@ fn eval_step(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Step, String> {
                     "define" => return Ok(Step::Value(eval_define(list, env, heap)?)),
                     "lambda" => return Ok(Step::Value(eval_lambda(list, env, heap)?)),
                     "defmacro" => return Ok(Step::Value(eval_defmacro(list, env, heap)?)),
+                    "import" => return Ok(Step::Value(eval_import(list, env, heap)?)),
                     "begin" => return eval_begin(list, env, heap),
                     "let" => return eval_let(list, env, heap),
 
@@ -287,6 +309,61 @@ fn eval_defmacro(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Expr, Strin
     } else {
         Err("invalid defmacro: expected (defmacro <symbol> (<params...>) <body>)".into())
     }
+}
+
+/// `(import "path")`
+///
+/// Reads another uwulisp source file, evaluates each top-level form in the
+/// current environment, and returns the last result. Relative imports are
+/// resolved against the importing file's directory when available.
+fn eval_import(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Expr, String> {
+    if list.len() != 2 {
+        return Err(format!(
+            "import expects 1 argument (path string), got {}",
+            list.len() - 1
+        ));
+    }
+
+    let requested = match &list[1] {
+        Expr::Str(path) => path,
+        other => {
+            return Err(format!(
+                "import: path must be a string literal, got {:?}",
+                other
+            ));
+        }
+    };
+
+    let path = resolve_import_path(requested);
+    let src = fs::read_to_string(&path)
+        .map_err(|err| format!("import: cannot read '{}': {}", path.display(), err))?;
+    let exprs = parse_all(&src)
+        .map_err(|err| format!("import: parse error in '{}': {}", path.display(), err))?;
+
+    let mut result = Expr::List(vec![]);
+    let base = path.parent();
+    with_import_base(base, || {
+        for expr in exprs {
+            result = eval(&expr, env, heap)
+                .map_err(|err| format!("import: error in '{}': {}", path.display(), err))?;
+        }
+        Ok(result)
+    })
+}
+
+fn resolve_import_path(path: &str) -> PathBuf {
+    let requested = Path::new(path);
+    if requested.is_absolute() {
+        return requested.to_path_buf();
+    }
+
+    IMPORT_BASES.with(|bases| {
+        if let Some(base) = bases.borrow().last() {
+            base.join(requested)
+        } else {
+            requested.to_path_buf()
+        }
+    })
 }
 
 /// `(begin expr...)`

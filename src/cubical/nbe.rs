@@ -233,7 +233,10 @@ pub fn do_papp(p: Value, r: Value) -> Value {
         Value::VPLam(_, clos) => match r {
             Value::VInterval(i) => clos.apply_i(i),
             Value::VIntervalVar(level) => clos.apply_i_var(level),
-            other => Value::VPApp(Box::new(Value::VPLam("_".to_string(), clos)), Box::new(other)),
+            other => Value::VPApp(
+                Box::new(Value::VPLam("_".to_string(), clos)),
+                Box::new(other),
+            ),
         },
         Value::VNeutral(n) => Value::VNeutral(Neutral::NPApp(Box::new(n), Box::new(r))),
         other => Value::VPApp(Box::new(other), Box::new(r)),
@@ -351,9 +354,7 @@ pub fn quote(size: usize, v: Value) -> Term {
             Box::new(quote(size, *u)),
             Box::new(quote(size, *v)),
         ),
-        Value::VPLam(x, clos) => {
-            Term::PLam(x, Box::new(quote(size + 1, clos.apply_i_var(size))))
-        }
+        Value::VPLam(x, clos) => Term::PLam(x, Box::new(quote(size + 1, clos.apply_i_var(size)))),
         Value::VPApp(p, r) => Term::PApp(Box::new(quote(size, *p)), Box::new(quote(size, *r))),
         Value::VUniv(n) => Term::TUniv(n),
         Value::VIntervalTy => Term::TIntervalTy,
@@ -449,7 +450,11 @@ fn quote_cases(size: usize, cases: Vec<ElimCase>) -> Vec<ElimCase> {
         .map(|case| ElimCase {
             con: case.con,
             binders: case.binders.clone(),
-            body: Box::new(normalize_under_binders(size, case.binders.len(), &case.body)),
+            body: Box::new(normalize_under_binders(
+                size,
+                case.binders.len(),
+                &case.body,
+            )),
         })
         .collect()
 }

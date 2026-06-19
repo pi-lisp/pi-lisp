@@ -73,7 +73,6 @@ fn wrap(t: Term) -> Expr {
     Expr::CubicalTerm(Box::new(t))
 }
 
-
 pub fn register_cubical(env: Env, heap: &mut Heap) {
     // ── interval atoms ───────────────────────────────────────────────────────
 
@@ -603,9 +602,7 @@ pub fn register_cubical(env: Env, heap: &mut Heap) {
         "pcon".into(),
         Expr::Func(Rc::new(|args, _heap| {
             if args.len() < 3 {
-                return Err(
-                    "pcon: expects (pcon datatype pconstructor r args...)".into(),
-                );
+                return Err("pcon: expects (pcon datatype pconstructor r args...)".into());
             }
             let dt = sym_name(&args[0], "pcon")?;
             let c = sym_name(&args[1], "pcon")?;
@@ -632,9 +629,7 @@ pub fn register_cubical(env: Env, heap: &mut Heap) {
         Expr::Func(Rc::new(|args, _heap| {
             use crate::cubical::syntax::ElimCase;
             if args.len() < 2 {
-                return Err(
-                    "elim: expects (elim motive scrutinee case0 case1 ...)".into(),
-                );
+                return Err("elim: expects (elim motive scrutinee case0 case1 ...)".into());
             }
             let motive = ctt(&args[0])?.clone();
             let scrut = ctt(&args[1])?.clone();
@@ -645,16 +640,12 @@ pub fn register_cubical(env: Env, heap: &mut Heap) {
                 let elems = match raw {
                     Expr::List(xs) => xs,
                     other => {
-                        return Err(format!(
-                            "elim: each case must be a list, got {:?}",
-                            other
-                        ))
+                        return Err(format!("elim: each case must be a list, got {:?}", other));
                     }
                 };
                 if elems.len() < 2 {
                     return Err(
-                        "elim: each case must have at least a constructor name and a body"
-                            .into(),
+                        "elim: each case must have at least a constructor name and a body".into(),
                     );
                 }
                 let con_name = sym_name(&elems[0], "elim case")?;
@@ -672,11 +663,7 @@ pub fn register_cubical(env: Env, heap: &mut Heap) {
                 });
             }
 
-            Ok(wrap(Term::TElim(
-                Box::new(motive),
-                cases,
-                Box::new(scrut),
-            )))
+            Ok(wrap(Term::TElim(Box::new(motive), cases, Box::new(scrut))))
         })),
     );
 

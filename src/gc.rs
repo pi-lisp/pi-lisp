@@ -104,7 +104,7 @@ pub struct GcHandle {
 
 /// The runtime data stored at each environment frame.
 pub struct EnvData {
-    pub vars:   HashMap<String, Expr>,
+    pub vars: HashMap<String, Expr>,
     pub parent: Option<GcHandle>,
 }
 
@@ -155,19 +155,31 @@ impl Heap {
     /// which is what invalidates any old `GcHandle` still pointing at
     /// that index.
     pub fn alloc(&mut self, parent: Option<GcHandle>) -> GcHandle {
-        let env_data = EnvData { vars: HashMap::new(), parent };
+        let env_data = EnvData {
+            vars: HashMap::new(),
+            parent,
+        };
         self.live_count += 1;
 
         if let Some(idx) = self.free_list.pop() {
             let new_generation = self.meta[idx].generation.wrapping_add(1);
-            self.meta[idx] = SlotMeta { marked: false, generation: new_generation };
+            self.meta[idx] = SlotMeta {
+                marked: false,
+                generation: new_generation,
+            };
             self.data[idx] = Some(env_data);
-            return GcHandle { idx, generation: new_generation };
+            return GcHandle {
+                idx,
+                generation: new_generation,
+            };
         }
 
         let idx = self.data.len();
         self.data.push(Some(env_data));
-        self.meta.push(SlotMeta { marked: false, generation: 0 });
+        self.meta.push(SlotMeta {
+            marked: false,
+            generation: 0,
+        });
         GcHandle { idx, generation: 0 }
     }
 
@@ -213,7 +225,10 @@ impl Heap {
             ));
         }
         if self.data[handle.idx].is_none() {
-            return Err(format!("GcHandle is dangling: slot {} was freed", handle.idx));
+            return Err(format!(
+                "GcHandle is dangling: slot {} was freed",
+                handle.idx
+            ));
         }
         Ok(())
     }
@@ -300,7 +315,11 @@ impl Heap {
                 }
             };
             if slot_generation != h.generation {
-                debug_assert!(false, "mark: handle {:?} is stale (slot generation is {})", h, slot_generation);
+                debug_assert!(
+                    false,
+                    "mark: handle {:?} is stale (slot generation is {})",
+                    h, slot_generation
+                );
                 continue;
             }
             if already_marked {
@@ -324,7 +343,9 @@ impl Heap {
 
             self.meta[h.idx].marked = true;
 
-            if let Some(p) = parent { stack.push(p); }
+            if let Some(p) = parent {
+                stack.push(p);
+            }
             stack.extend(found);
         }
     }
@@ -362,15 +383,21 @@ impl Heap {
     // ── diagnostics ──────────────────────────────────────────────────────────
 
     /// Total number of slots ever allocated (including free slots).
-    pub fn capacity(&self) -> usize { self.data.len() }
+    pub fn capacity(&self) -> usize {
+        self.data.len()
+    }
 
     /// Number of live (non-freed) slots. O(1) — tracked incrementally
     /// rather than rescanned on every call.
-    pub fn live_count(&self) -> usize { self.live_count }
+    pub fn live_count(&self) -> usize {
+        self.live_count
+    }
 }
 
 impl Default for Heap {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Expr traversal for marking ──────────────────────────────────────────────
@@ -406,10 +433,7 @@ fn collect_lambda_envs(expr: &Expr, out: &mut Vec<GcHandle>) {
                 collect_lambda_envs(item, out);
             }
         }
-        Expr::Symbol(_)
-        | Expr::Number(_)
-        | Expr::Str(_)
-        | Expr::Func(_)
-        | Expr::CubicalTerm(_) => {}
+        Expr::Symbol(_) | Expr::Number(_) | Expr::Str(_) | Expr::Func(_) | Expr::CubicalTerm(_) => {
+        }
     }
 }

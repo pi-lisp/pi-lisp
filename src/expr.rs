@@ -49,20 +49,22 @@ pub enum Expr {
 impl fmt::Debug for Expr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Expr::Symbol(s)      => write!(f, "{}", s),
-            Expr::Number(n)      => write!(f, "{}", n),
-            Expr::Str(s)         => write!(f, "{:?}", s),
+            Expr::Symbol(s) => write!(f, "{}", s),
+            Expr::Number(n) => write!(f, "{}", n),
+            Expr::Str(s) => write!(f, "{:?}", s),
             Expr::List(l) => {
                 write!(f, "(")?;
                 for (i, e) in l.iter().enumerate() {
-                    if i > 0 { write!(f, " ")?; }
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
                     write!(f, "{:?}", e)?;
                 }
                 write!(f, ")")
             }
-            Expr::Func(_)        => write!(f, "<builtin>"),
-            Expr::Lambda(..)     => write!(f, "<lambda>"),
-            Expr::Macro(..)      => write!(f, "<macro>"),
+            Expr::Func(_) => write!(f, "<builtin>"),
+            Expr::Lambda(..) => write!(f, "<lambda>"),
+            Expr::Macro(..) => write!(f, "<macro>"),
             Expr::CubicalTerm(t) => write!(f, "<cubical:{}>", t),
         }
     }
@@ -70,11 +72,11 @@ impl fmt::Debug for Expr {
 
 pub fn is_truthy(e: &Expr) -> bool {
     match e {
-        Expr::Number(n)      => *n != 0.0,
-        Expr::Str(s)         => !s.is_empty(),
-        Expr::List(l)        => !l.is_empty(),
+        Expr::Number(n) => *n != 0.0,
+        Expr::Str(s) => !s.is_empty(),
+        Expr::List(l) => !l.is_empty(),
         Expr::CubicalTerm(_) => true,
-        _                    => true,
+        _ => true,
     }
 }
 

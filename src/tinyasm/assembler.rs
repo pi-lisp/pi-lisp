@@ -1,5 +1,5 @@
+use crate::tinyasm::encoder::{EncodeError, Instruction, encode_instruction};
 use std::collections::HashMap;
-use crate::tinyasm::encoder::{Instruction, encode_instruction, EncodeError};
 
 pub struct Assembler {
     instructions: Vec<Instruction>,
@@ -51,9 +51,11 @@ impl Assembler {
     /// for everything else).  Encoding each non-jump instruction once here
     /// avoids redundant encoding in pass 2.
     fn run_pass1(&mut self) -> Result<Vec<usize>, EncodeError> {
-        if self.debug { eprintln!("=== [Pass 1] Symbol Resolution ==="); }
+        if self.debug {
+            eprintln!("=== [Pass 1] Symbol Resolution ===");
+        }
 
-        let mut sizes  = Vec::with_capacity(self.instructions.len());
+        let mut sizes = Vec::with_capacity(self.instructions.len());
         let mut offset = 0usize;
         self.labels.clear();
 
@@ -61,9 +63,7 @@ impl Assembler {
             match instr {
                 Instruction::Label(name) => {
                     if self.labels.contains_key(name) {
-                        return Err(EncodeError::Other(
-                            format!("Duplicate label: '{}'", name)
-                        ));
+                        return Err(EncodeError::Other(format!("Duplicate label: '{}'", name)));
                     }
                     self.labels.insert(name.clone(), offset);
                     if self.debug {
@@ -84,7 +84,9 @@ impl Assembler {
     // --- Pass 2: emit bytes -----------------------------------------------
 
     fn run_pass2(&self, sizes: &[usize]) -> Result<Vec<u8>, EncodeError> {
-        if self.debug { eprintln!("=== [Pass 2] Code Generation ==="); }
+        if self.debug {
+            eprintln!("=== [Pass 2] Code Generation ===");
+        }
 
         let mut out = Vec::new();
 
@@ -97,7 +99,9 @@ impl Assembler {
 
             match instr {
                 Instruction::Label(_) => {
-                    if self.debug { eprintln!("(label — no bytes)"); }
+                    if self.debug {
+                        eprintln!("(label — no bytes)");
+                    }
                     continue;
                 }
 
@@ -167,22 +171,23 @@ impl Assembler {
     /// - `instr_len`    — total byte length of this instruction (prefix bytes + 4)
     fn encode_rel32_jump(
         &self,
-        prefix:       &[u8],
-        target:       &str,
+        prefix: &[u8],
+        target: &str,
         instr_offset: usize,
-        instr_len:    usize,
+        instr_len: usize,
     ) -> Result<Vec<u8>, EncodeError> {
-        let target_offset = *self.labels.get(target).ok_or_else(|| {
-            EncodeError::Other(format!("Undefined label: '{}'", target))
-        })?;
+        let target_offset = *self
+            .labels
+            .get(target)
+            .ok_or_else(|| EncodeError::Other(format!("Undefined label: '{}'", target)))?;
 
         // The processor adds the displacement to IP *after* the jump instruction.
         let next_ip = instr_offset + instr_len;
         let rel: i32 = (target_offset as i64 - next_ip as i64)
             .try_into()
-            .map_err(|_| EncodeError::Other(
-                format!("Jump to '{}' is out of rel32 range", target)
-            ))?;
+            .map_err(|_| {
+                EncodeError::Other(format!("Jump to '{}' is out of rel32 range", target))
+            })?;
 
         let mut bytes = prefix.to_vec();
         bytes.extend_from_slice(&rel.to_le_bytes());
@@ -196,8 +201,8 @@ impl Assembler {
     /// this avoids calling `encode_instruction`, which would reject them.
     fn fixed_size(&self, instr: &Instruction) -> Result<usize, EncodeError> {
         match instr {
-            Instruction::Label(_)     => Ok(0),
-            Instruction::JmpLabel(_)  => Ok(5),
+            Instruction::Label(_) => Ok(0),
+            Instruction::JmpLabel(_) => Ok(5),
             Instruction::JeLabel(_)
             | Instruction::JneLabel(_)
             | Instruction::JlLabel(_)

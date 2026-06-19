@@ -2,7 +2,11 @@ use std::rc::Rc;
 use std::thread;
 
 use crate::gc::Heap;
-use crate::{builtins::{display_str, num, str_arg}, env::{Env, env_set}, expr::Expr};
+use crate::{
+    builtins::{display_str, num, str_arg},
+    env::{Env, env_set},
+    expr::Expr,
+};
 
 pub fn register_strings(env: Env, heap: &mut Heap) {
     env_set(
@@ -148,7 +152,7 @@ pub fn register_strings(env: Env, heap: &mut Heap) {
         heap,
         env,
         "substring".into(),
-        Expr::Func(Rc::new(|args,_heap| {
+        Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 3 {
                 return Err("substring: expects (substring s start end)".into());
             }
@@ -207,10 +211,14 @@ impl ThreadValue {
                 .map(ThreadValue::from_expr)
                 .collect::<Result<Vec<_>, _>>()
                 .map(ThreadValue::List),
-            Expr::Func(_) => Err("worker returned a builtin function, which cannot cross threads".into()),
+            Expr::Func(_) => {
+                Err("worker returned a builtin function, which cannot cross threads".into())
+            }
             Expr::Lambda(..) => Err("worker returned a lambda, which cannot cross threads".into()),
             Expr::Macro(..) => Err("worker returned a macro, which cannot cross threads".into()),
-            Expr::CubicalTerm(_) => Err("worker returned a cubical term, which cannot cross threads".into()),
+            Expr::CubicalTerm(_) => {
+                Err("worker returned a cubical term, which cannot cross threads".into())
+            }
         }
     }
 
@@ -301,12 +309,12 @@ pub fn register_threading(env: Env, heap: &mut Heap) {
 ///
 /// `(read-line)`            — reads one line from stdin, returns `Expr::Str`.
 /// `(read-line prompt)`     — prints `prompt` (no newline) first, then reads.
-pub fn register_io(env: Env,heap: &mut Heap) {
+pub fn register_io(env: Env, heap: &mut Heap) {
     env_set(
         heap,
         env,
         "read-line".into(),
-        Expr::Func(Rc::new(|args,_heap| {
+        Expr::Func(Rc::new(|args, _heap| {
             use std::io::Write;
             if args.len() > 1 {
                 return Err("read-line: expects 0 or 1 arguments".into());
@@ -319,7 +327,7 @@ pub fn register_io(env: Env,heap: &mut Heap) {
             // Use the shared BufReader from main so we never race with the REPL.
             match crate::helper::shared_read_line()? {
                 Some(line) => Ok(Expr::Str(line)),
-                None       => Ok(Expr::Str(String::new())), // EOF → empty string
+                None => Ok(Expr::Str(String::new())), // EOF → empty string
             }
         })),
     );
@@ -336,7 +344,7 @@ pub fn register_io(env: Env,heap: &mut Heap) {
 /// `(file-append path content)`  — append string content to file.
 /// `(file-exists? path)`         — return 1.0 / 0.0.
 /// `(file-delete  path)`         — delete file; returns `()`.
-pub fn register_file(env: Env,heap: &mut Heap) {
+pub fn register_file(env: Env, heap: &mut Heap) {
     // (file-read path)
     env_set(
         heap,
@@ -358,11 +366,11 @@ pub fn register_file(env: Env,heap: &mut Heap) {
         heap,
         env,
         "file-write".into(),
-        Expr::Func(Rc::new(|args,_heap| {
+        Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 2 {
                 return Err("file-write: expects (file-write path content)".into());
             }
-            let path    = str_arg(&args[0])?;
+            let path = str_arg(&args[0])?;
             let content = str_arg(&args[1])?;
             std::fs::write(path, content)
                 .map(|_| Expr::List(vec![]))
@@ -379,7 +387,7 @@ pub fn register_file(env: Env,heap: &mut Heap) {
             if args.len() != 2 {
                 return Err("file-append: expects (file-append path content)".into());
             }
-            let path    = str_arg(&args[0])?;
+            let path = str_arg(&args[0])?;
             let content = str_arg(&args[1])?;
             use std::io::Write as _;
             std::fs::OpenOptions::new()
@@ -397,7 +405,7 @@ pub fn register_file(env: Env,heap: &mut Heap) {
         heap,
         env,
         "file-exists?".into(),
-        Expr::Func(Rc::new(|args,_heap| {
+        Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 1 {
                 return Err("file-exists?: expects exactly 1 argument".into());
             }
@@ -415,7 +423,7 @@ pub fn register_file(env: Env,heap: &mut Heap) {
         heap,
         env,
         "file-delete".into(),
-        Expr::Func(Rc::new(|args,_heap| {
+        Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 1 {
                 return Err("file-delete: expects exactly 1 argument".into());
             }
@@ -436,7 +444,7 @@ pub fn register_file(env: Env,heap: &mut Heap) {
 /// `(shell cmd)`                    — run `cmd` via `sh -c`, block until done,
 ///                                    return captured stdout as `Expr::Str`.
 /// `(shell-status cmd)`             — same but return exit code as `Expr::Number`.
-pub fn register_os(env: Env,heap: &mut Heap) {
+pub fn register_os(env: Env, heap: &mut Heap) {
     use std::process::Command;
 
     // (shell cmd-string) → Expr::Str  (captured stdout)
@@ -444,7 +452,7 @@ pub fn register_os(env: Env,heap: &mut Heap) {
         heap,
         env,
         "shell".into(),
-        Expr::Func(Rc::new(|args,_heap| {
+        Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 1 {
                 return Err("shell: expects exactly 1 argument".into());
             }
@@ -464,7 +472,7 @@ pub fn register_os(env: Env,heap: &mut Heap) {
         heap,
         env,
         "shell-status".into(),
-        Expr::Func(Rc::new(|args,_heap| {
+        Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 1 {
                 return Err("shell-status: expects exactly 1 argument".into());
             }

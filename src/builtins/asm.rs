@@ -7,7 +7,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::thread;
 
-use crate::{env::{Env, env_set}, expr::Expr, gc::Heap, tinyasm::{Assembler, Instruction, JitMemory, MemoryAddr, Operand, Register}};
+use crate::{
+    env::{Env, env_set},
+    expr::Expr,
+    gc::Heap,
+    tinyasm::{Assembler, Instruction, JitMemory, MemoryAddr, Operand, Register},
+};
 
 /// Parse an `Expr::Symbol` into an x86-64 register.
 fn parse_register(s: &str) -> Result<Register, String> {
@@ -294,43 +299,124 @@ fn parse_text_instruction(line: &str) -> Result<Option<Instruction>, String> {
 
     let instr = match mnemonic.as_str() {
         // --- Data movement ---
-        "mov" => { need(2)?; Instruction::Mov(op(0)?, op(1)?) }
-        "lea" => { need(2)?; Instruction::Lea(op(0)?, op(1)?) }
-        "push" => { need(1)?; Instruction::Push(op(0)?) }
-        "pop"  => { need(1)?; Instruction::Pop(op(0)?) }
+        "mov" => {
+            need(2)?;
+            Instruction::Mov(op(0)?, op(1)?)
+        }
+        "lea" => {
+            need(2)?;
+            Instruction::Lea(op(0)?, op(1)?)
+        }
+        "push" => {
+            need(1)?;
+            Instruction::Push(op(0)?)
+        }
+        "pop" => {
+            need(1)?;
+            Instruction::Pop(op(0)?)
+        }
 
         // --- Arithmetic ---
-        "add"  => { need(2)?; Instruction::Add(op(0)?, op(1)?) }
-        "sub"  => { need(2)?; Instruction::Sub(op(0)?, op(1)?) }
-        "imul" => { need(2)?; Instruction::IMul(op(0)?, op(1)?) }
-        "mul"  => { need(1)?; Instruction::Mul(op(0)?) }
-        "div"  => { need(1)?; Instruction::Div(op(0)?) }
+        "add" => {
+            need(2)?;
+            Instruction::Add(op(0)?, op(1)?)
+        }
+        "sub" => {
+            need(2)?;
+            Instruction::Sub(op(0)?, op(1)?)
+        }
+        "imul" => {
+            need(2)?;
+            Instruction::IMul(op(0)?, op(1)?)
+        }
+        "mul" => {
+            need(1)?;
+            Instruction::Mul(op(0)?)
+        }
+        "div" => {
+            need(1)?;
+            Instruction::Div(op(0)?)
+        }
 
         // --- Bitwise / shift ---
-        "and" => { need(2)?; Instruction::And(op(0)?, op(1)?) }
-        "or"  => { need(2)?; Instruction::Or(op(0)?, op(1)?) }
-        "xor" => { need(2)?; Instruction::Xor(op(0)?, op(1)?) }
-        "not" => { need(1)?; Instruction::Not(op(0)?) }
-        "shl" => { need(2)?; Instruction::Shl(op(0)?, op(1)?) }
-        "shr" => { need(2)?; Instruction::Shr(op(0)?, op(1)?) }
+        "and" => {
+            need(2)?;
+            Instruction::And(op(0)?, op(1)?)
+        }
+        "or" => {
+            need(2)?;
+            Instruction::Or(op(0)?, op(1)?)
+        }
+        "xor" => {
+            need(2)?;
+            Instruction::Xor(op(0)?, op(1)?)
+        }
+        "not" => {
+            need(1)?;
+            Instruction::Not(op(0)?)
+        }
+        "shl" => {
+            need(2)?;
+            Instruction::Shl(op(0)?, op(1)?)
+        }
+        "shr" => {
+            need(2)?;
+            Instruction::Shr(op(0)?, op(1)?)
+        }
 
         // --- Compare / test ---
-        "cmp"  => { need(2)?; Instruction::Cmp(op(0)?, op(1)?) }
-        "test" => { need(2)?; Instruction::Test(op(0)?, op(1)?) }
+        "cmp" => {
+            need(2)?;
+            Instruction::Cmp(op(0)?, op(1)?)
+        }
+        "test" => {
+            need(2)?;
+            Instruction::Test(op(0)?, op(1)?)
+        }
 
         // --- Control flow ---
-        "call"    => { need(1)?; Instruction::Call(op(0)?) }
-        "ret"     => { need(0)?; Instruction::Ret }
-        "syscall" => { need(0)?; Instruction::Syscall }
+        "call" => {
+            need(1)?;
+            Instruction::Call(op(0)?)
+        }
+        "ret" => {
+            need(0)?;
+            Instruction::Ret
+        }
+        "syscall" => {
+            need(0)?;
+            Instruction::Syscall
+        }
 
         // --- Jumps ---
-        "jmp" => { need(1)?; Instruction::JmpLabel(ops[0].clone()) }
-        "je"  => { need(1)?; Instruction::JeLabel(ops[0].clone()) }
-        "jne" => { need(1)?; Instruction::JneLabel(ops[0].clone()) }
-        "jl"  => { need(1)?; Instruction::JlLabel(ops[0].clone()) }
-        "jle" => { need(1)?; Instruction::JleLabel(ops[0].clone()) }
-        "jge" => { need(1)?; Instruction::JgeLabel(ops[0].clone()) }
-        "jg"  => { need(1)?; Instruction::JgLabel(ops[0].clone()) }
+        "jmp" => {
+            need(1)?;
+            Instruction::JmpLabel(ops[0].clone())
+        }
+        "je" => {
+            need(1)?;
+            Instruction::JeLabel(ops[0].clone())
+        }
+        "jne" => {
+            need(1)?;
+            Instruction::JneLabel(ops[0].clone())
+        }
+        "jl" => {
+            need(1)?;
+            Instruction::JlLabel(ops[0].clone())
+        }
+        "jle" => {
+            need(1)?;
+            Instruction::JleLabel(ops[0].clone())
+        }
+        "jge" => {
+            need(1)?;
+            Instruction::JgeLabel(ops[0].clone())
+        }
+        "jg" => {
+            need(1)?;
+            Instruction::JgLabel(ops[0].clone())
+        }
 
         // NASM section/global directives — silently ignored.
         "section" | "global" | "extern" | "bits" | "default" => return Ok(None),
@@ -619,7 +705,7 @@ pub fn register_load_asm(env: Env, heap: &mut Heap) {
                     return Err(format!(
                         "load-asm: filename must be a string, got {:?}",
                         other
-                    ))
+                    ));
                 }
             };
 
@@ -639,7 +725,7 @@ pub fn register_load_asm(env: Env, heap: &mut Heap) {
                             filename,
                             line_no + 1,
                             e
-                        ))
+                        ));
                     }
                 }
             }
@@ -723,7 +809,7 @@ pub fn register_load_asm_parallel(env: Env, heap: &mut Heap) {
                                         filename,
                                         line_no + 1,
                                         e
-                                    ))
+                                    ));
                                 }
                             }
                         }

@@ -4,8 +4,8 @@
 //   crate::interval::{dnf_top, dnf_bot, eval_interval, I}
 //   crate::syntax::{Term, Name, shift, subst, beta}
 
-use crate::cubical::interval::{dnf_top, dnf_bot, eval_interval, I};
-use crate::cubical::syntax::{Term, shift, subst, beta};
+use crate::cubical::interval::{I, dnf_bot, dnf_top, eval_interval};
+use crate::cubical::syntax::{Term, beta, shift, subst};
 
 // ---------------------------------------------------------------------------
 // DNF Helpers
@@ -58,12 +58,13 @@ pub fn eval(t: &Term) -> Term {
         // ------------------------------------------------------------------
         // Congruence cases (evaluate under binders / sub-terms)
         // ------------------------------------------------------------------
-        Term::TAbs(x, b)    => Term::TAbs(x.clone(), Box::new(eval(b))),
-        Term::TPi(x, a, b)  => Term::TPi(x.clone(), Box::new(eval(a)), Box::new(eval(b))),
-        Term::TPath(a, u, v) =>
-            Term::TPath(Box::new(eval(a)), Box::new(eval(u)), Box::new(eval(v))),
-        Term::PLam(i, b)    => Term::PLam(i.clone(), Box::new(eval(b))),
-        Term::TInterval(i)  => Term::TCube(eval_interval(i)),
+        Term::TAbs(x, b) => Term::TAbs(x.clone(), Box::new(eval(b))),
+        Term::TPi(x, a, b) => Term::TPi(x.clone(), Box::new(eval(a)), Box::new(eval(b))),
+        Term::TPath(a, u, v) => {
+            Term::TPath(Box::new(eval(a)), Box::new(eval(u)), Box::new(eval(v)))
+        }
+        Term::PLam(i, b) => Term::PLam(i.clone(), Box::new(eval(b))),
+        Term::TInterval(i) => Term::TCube(eval_interval(i)),
 
         // ------------------------------------------------------------------
         // Homogeneous composition
@@ -73,10 +74,8 @@ pub fn eval(t: &Term) -> Term {
             if is_top_dnf(&phi_) {
                 let tube_ = eval(tube);
                 match tube_ {
-                    Term::PLam(_, body) =>
-                        eval(&beta(&body, &Term::TInterval(I::I1))),
-                    tube_ =>
-                        Term::PApp(Box::new(tube_), Box::new(Term::TInterval(I::I1))),
+                    Term::PLam(_, body) => eval(&beta(&body, &Term::TInterval(I::I1))),
+                    tube_ => Term::PApp(Box::new(tube_), Box::new(Term::TInterval(I::I1))),
                 }
             } else if is_bot_dnf(&phi_) {
                 eval(base)
@@ -93,24 +92,23 @@ pub fn eval(t: &Term) -> Term {
         // ------------------------------------------------------------------
         // Equivalences
         // ------------------------------------------------------------------
-        Term::TEquiv(a, b) =>
-            Term::TEquiv(Box::new(eval(a)), Box::new(eval(b))),
+        Term::TEquiv(a, b) => Term::TEquiv(Box::new(eval(a)), Box::new(eval(b))),
 
-        Term::TMkEquiv(a, b, f, g, eta, eps) =>
-            Term::TMkEquiv(
-                Box::new(eval(a)), Box::new(eval(b)),
-                Box::new(eval(f)), Box::new(eval(g)),
-                Box::new(eval(eta)), Box::new(eval(eps)),
-            ),
+        Term::TMkEquiv(a, b, f, g, eta, eps) => Term::TMkEquiv(
+            Box::new(eval(a)),
+            Box::new(eval(b)),
+            Box::new(eval(f)),
+            Box::new(eval(g)),
+            Box::new(eval(eta)),
+            Box::new(eval(eps)),
+        ),
 
         Term::TEquivFwd(e, x) => {
             let e_ = eval(e);
             let x_ = eval(x);
             match &e_ {
-                Term::TMkEquiv(_, _, f, _, _, _) =>
-                    eval(&Term::TApp(f.clone(), Box::new(x_))),
-                _ =>
-                    Term::TEquivFwd(Box::new(e_), Box::new(x_)),
+                Term::TMkEquiv(_, _, f, _, _, _) => eval(&Term::TApp(f.clone(), Box::new(x_))),
+                _ => Term::TEquivFwd(Box::new(e_), Box::new(x_)),
             }
         }
 
@@ -164,11 +162,9 @@ pub fn eval(t: &Term) -> Term {
         // ------------------------------------------------------------------
         // Sigma types & pairs
         // ------------------------------------------------------------------
-        Term::TSigma(x, a, b) =>
-            Term::TSigma(x.clone(), Box::new(eval(a)), Box::new(eval(b))),
+        Term::TSigma(x, a, b) => Term::TSigma(x.clone(), Box::new(eval(a)), Box::new(eval(b))),
 
-        Term::TPair(a, b) =>
-            Term::TPair(Box::new(eval(a)), Box::new(eval(b))),
+        Term::TPair(a, b) => Term::TPair(Box::new(eval(a)), Box::new(eval(b))),
 
         // fst (a , b)  →  a
         Term::TFst(p) => match eval(p) {
@@ -187,15 +183,16 @@ pub fn eval(t: &Term) -> Term {
         // ------------------------------------------------------------------
 
         // Constructors: congruence only — evaluate children, rebuild.
-        Term::TCon(data, con, args) =>
-            Term::TCon(data.clone(), con.clone(), args.iter().map(eval).collect()),
+        Term::TCon(data, con, args) => {
+            Term::TCon(data.clone(), con.clone(), args.iter().map(eval).collect())
+        }
 
-        Term::TPCon(data, con, args, r) =>
-            Term::TPCon(
-                data.clone(), con.clone(),
-                args.iter().map(eval).collect(),
-                Box::new(eval(r)),
-            ),
+        Term::TPCon(data, con, args, r) => Term::TPCon(
+            data.clone(),
+            con.clone(),
+            args.iter().map(eval).collect(),
+            Box::new(eval(r)),
+        ),
 
         // Eliminator: ι-reduction on constructors / path constructors,
         // else stuck (rebuilt with evaluated children).
@@ -210,11 +207,9 @@ pub fn eval(t: &Term) -> Term {
                         // No matching case: stuck (ill-typed if the
                         // eliminator was well-checked, but eval doesn't
                         // assume well-typedness).
-                        None => Term::TElim(
-                            Box::new(eval(motive)),
-                            eval_cases(cases),
-                            Box::new(scrut_),
-                        ),
+                        None => {
+                            Term::TElim(Box::new(eval(motive)), eval_cases(cases), Box::new(scrut_))
+                        }
                     }
                 }
 
@@ -241,20 +236,14 @@ pub fn eval(t: &Term) -> Term {
                             let body_open = subst_ord_args_open(args, &case.body);
                             eval(&Term::PApp(Box::new(body_open), Box::new((**r).clone())))
                         }
-                        _ => Term::TElim(
-                            Box::new(eval(motive)),
-                            eval_cases(cases),
-                            Box::new(scrut_),
-                        ),
+                        _ => {
+                            Term::TElim(Box::new(eval(motive)), eval_cases(cases), Box::new(scrut_))
+                        }
                     }
                 }
 
                 // Neutral scrutinee: stuck.
-                _ => Term::TElim(
-                    Box::new(eval(motive)),
-                    eval_cases(cases),
-                    Box::new(scrut_),
-                ),
+                _ => Term::TElim(Box::new(eval(motive)), eval_cases(cases), Box::new(scrut_)),
             }
         }
 
@@ -272,11 +261,14 @@ pub fn eval(t: &Term) -> Term {
 /// Evaluate the bodies of a case list under no substitution (used only on
 /// the "stuck" paths above, where children still need to be normalized).
 fn eval_cases(cases: &[crate::cubical::syntax::ElimCase]) -> Vec<crate::cubical::syntax::ElimCase> {
-    cases.iter().map(|case| crate::cubical::syntax::ElimCase {
-        con: case.con.clone(),
-        binders: case.binders.clone(),
-        body: Box::new(eval(&case.body)),
-    }).collect()
+    cases
+        .iter()
+        .map(|case| crate::cubical::syntax::ElimCase {
+            con: case.con.clone(),
+            binders: case.binders.clone(),
+            body: Box::new(eval(&case.body)),
+        })
+        .collect()
 }
 
 /// Substitute `args` (outermost-first) for the ordinary-argument positions
@@ -293,9 +285,12 @@ fn eval_cases(cases: &[crate::cubical::syntax::ElimCase]) -> Vec<crate::cubical:
 /// pre-shift `args` ourselves, since `subst` already does that exactly
 /// once per binder it crosses.
 fn subst_ord_args_open(args: &[Term], body: &Term) -> Term {
-    args.iter().rev().enumerate().fold(body.clone(), |acc, (offset, arg)| {
-        subst(offset as i32, arg, &acc)
-    })
+    args.iter()
+        .rev()
+        .enumerate()
+        .fold(body.clone(), |acc, (offset, arg)| {
+            subst(offset as i32, arg, &acc)
+        })
 }
 
 /// Substitute `args` (innermost binder = last arg, matching declaration
@@ -311,7 +306,9 @@ fn subst_ord_args_open(args: &[Term], body: &Term) -> Term {
 /// a telescope of substitutions one at a time.
 fn subst_case_args(binders: &[crate::cubical::syntax::Name], args: &[Term], body: &Term) -> Term {
     debug_assert_eq!(binders.len(), args.len());
-    args.iter().rev().fold(body.clone(), |acc, arg| beta(&acc, arg))
+    args.iter()
+        .rev()
+        .fold(body.clone(), |acc, arg| beta(&acc, arg))
 }
 
 // ---------------------------------------------------------------------------
@@ -321,8 +318,7 @@ fn subst_case_args(binders: &[crate::cubical::syntax::Name], args: &[Term], body
 fn eval_transport(p_: Term, x_: Term) -> Term {
     match p_ {
         // ua e : Path U A B  →  transport (ua e) x  =  equivFwd e x
-        Term::TUa(ref e) =>
-            eval(&Term::TEquivFwd(e.clone(), Box::new(x_))),
+        Term::TUa(ref e) => eval(&Term::TEquivFwd(e.clone(), Box::new(x_))),
 
         Term::PLam(ref i_name, ref body) => {
             let b0 = eval(&beta(body, &Term::TInterval(I::I0)));
@@ -339,7 +335,7 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
                 // ------------------------------------------------------
                 (Term::TPi(arg_name, _, _), Term::TPi(_, _, _)) => {
                     let arg_name = arg_name.clone();
-                    let i_name   = i_name.clone();
+                    let i_name = i_name.clone();
 
                     // B-family: ⟨i⟩ B i
                     let b0_body = match &b0 {
@@ -350,14 +346,13 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
                         i_name.clone(),
                         Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
                             Term::TPi(_, _, b_i) => *b_i,
-                            _                    => shift(1, 0, &b0_body),
+                            _ => shift(1, 0, &b0_body),
                         }),
                     );
 
                     // Is B non-dependent in a (TVar 0)?
                     let b_non_dep = match &b0 {
-                        Term::TPi(_, _, b0_body) =>
-                            subst(0, &Term::TUniv(0), b0_body) == **b0_body,
+                        Term::TPi(_, _, b0_body) => subst(0, &Term::TUniv(0), b0_body) == **b0_body,
                         _ => false,
                     };
 
@@ -368,7 +363,10 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
                             arg_name,
                             Box::new(eval(&Term::TTransport(
                                 Box::new(b_fam),
-                                Box::new(eval(&Term::TApp(Box::new(x_shifted), Box::new(Term::TVar(0))))),
+                                Box::new(eval(&Term::TApp(
+                                    Box::new(x_shifted),
+                                    Box::new(Term::TVar(0)),
+                                ))),
                             ))),
                         )
                     } else {
@@ -382,19 +380,19 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
                 // ------------------------------------------------------
                 (Term::TPath(ty_a0, _, _), Term::TPath(_, _, _)) => {
                     let i_name = i_name.clone();
-                    let ty_a0  = (**ty_a0).clone();
+                    let ty_a0 = (**ty_a0).clone();
 
                     // A-family: ⟨i⟩ A i
                     let a_fam = Term::PLam(
                         i_name.clone(),
                         Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
                             Term::TPath(a, _, _) => *a,
-                            _                    => shift(1, 0, &ty_a0),
+                            _ => shift(1, 0, &ty_a0),
                         }),
                     );
 
                     // ⟨j⟩ transport (⟨i⟩ A i) (x @ j)
-                    let a_fam_s  = shift(1, 0, &a_fam);
+                    let a_fam_s = shift(1, 0, &a_fam);
                     let x_shifted = shift(1, 0, &x_);
                     Term::PLam(
                         "j".to_string(),
@@ -427,15 +425,16 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
                                 i_name.clone(),
                                 Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
                                     Term::TSigma(_, a_i, _) => *a_i,
-                                    _                       => shift(1, 0, &b0_a),
+                                    _ => shift(1, 0, &b0_a),
                                 }),
                             );
 
                             // transport along A
-                            let a_prime = eval(&Term::TTransport(Box::new(a_fam.clone()), a.clone()));
+                            let a_prime =
+                                eval(&Term::TTransport(Box::new(a_fam.clone()), a.clone()));
 
                             // B-family along fill: ⟨i⟩ B i (fill A a i)
-                            let a_clone  = (**a).clone();
+                            let a_clone = (**a).clone();
                             let b_fam = Term::PLam(
                                 i_name.clone(),
                                 Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
@@ -482,7 +481,7 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
                                 i_name.clone(),
                                 Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
                                     Term::TGlue(a, _, _) => *a,
-                                    other               => other,
+                                    other => other,
                                 }),
                             )),
                             Box::new(x_),
@@ -493,17 +492,14 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
                                 i_name.clone(),
                                 Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
                                     Term::TGlue(_, _, te) => equiv_dom(&eval(&te)),
-                                    other                => other,
+                                    other => other,
                                 }),
                             )),
                             Box::new(x_),
                         ))
                     } else {
                         // General Glue: stuck
-                        Term::TTransport(
-                            Box::new(Term::PLam(i_name, body.clone())),
-                            Box::new(x_),
-                        )
+                        Term::TTransport(Box::new(Term::PLam(i_name, body.clone())), Box::new(x_))
                     }
                 }
 
@@ -527,7 +523,7 @@ fn eval_transport(p_: Term, x_: Term) -> Term {
 pub fn equiv_dom(t: &Term) -> Term {
     match t {
         Term::TMkEquiv(a, _, _, _, _, _) => (**a).clone(),
-        Term::TEquiv(a, _)               => (**a).clone(),
-        other                            => other.clone(),
+        Term::TEquiv(a, _) => (**a).clone(),
+        other => other.clone(),
     }
 }

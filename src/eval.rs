@@ -61,15 +61,15 @@ enum Step {
 pub fn eval(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Expr, String> {
     // Trampoline state: the expression and environment for the current iteration.
     let mut cur_expr = expr.clone();
-    let mut cur_env  = env;
+    let mut cur_env = env;
 
     loop {
         let step = eval_step(&cur_expr, cur_env, heap)?;
         match step {
-            Step::Value(v)                  => return Ok(v),
+            Step::Value(v) => return Ok(v),
             Step::TailCall { expr: e, env } => {
                 cur_expr = e;
-                cur_env  = env;
+                cur_env = env;
             }
         }
     }
@@ -87,13 +87,13 @@ pub fn eval(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Expr, String> {
 /// code outside the loop (e.g. a builtin that calls back into eval) the same
 /// applies.
 pub fn apply(
-    func:          Expr,
-    args:          &[Expr],
+    func: Expr,
+    args: &[Expr],
     call_site_env: Env,
-    heap:          &mut Heap,
+    heap: &mut Heap,
 ) -> Result<Expr, String> {
     match apply_step(func, args, call_site_env, heap)? {
-        Step::Value(v)              => Ok(v),
+        Step::Value(v) => Ok(v),
         Step::TailCall { expr, env } => eval(&expr, env, heap),
     }
 }
@@ -104,8 +104,8 @@ pub fn apply(
 /// either a finished value or a tail-call descriptor.
 fn eval_step(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Step, String> {
     match expr {
-        Expr::Number(_)      => Ok(Step::Value(expr.clone())),
-        Expr::Str(_)         => Ok(Step::Value(expr.clone())),
+        Expr::Number(_) => Ok(Step::Value(expr.clone())),
+        Expr::Str(_) => Ok(Step::Value(expr.clone())),
         // CubicalTerm values are opaque atoms — they self-evaluate just like
         // numbers and are only inspected by the cubical builtins.
         Expr::CubicalTerm(_) => Ok(Step::Value(expr.clone())),
@@ -140,20 +140,18 @@ fn eval_step(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Step, String> {
                         }
                         // eval_quasiquote needs heap for any nested unquote
                         // splices that call back into eval.
-                        return Ok(Step::Value(eval_quasiquote(
-                            &list[1], env, heap, 1,
-                        )?));
+                        return Ok(Step::Value(eval_quasiquote(&list[1], env, heap, 1)?));
                     }
 
                     "unquote" => return Err("unquote outside quasiquote".into()),
 
                     // ── special forms that return a Step directly ──────────
-                    "if"       => return eval_if(list, env, heap),
-                    "define"   => return Ok(Step::Value(eval_define(list, env, heap)?)),
-                    "lambda"   => return Ok(Step::Value(eval_lambda(list, env, heap)?)),
+                    "if" => return eval_if(list, env, heap),
+                    "define" => return Ok(Step::Value(eval_define(list, env, heap)?)),
+                    "lambda" => return Ok(Step::Value(eval_lambda(list, env, heap)?)),
                     "defmacro" => return Ok(Step::Value(eval_defmacro(list, env, heap)?)),
-                    "begin"    => return eval_begin(list, env, heap),
-                    "let"      => return eval_let(list, env, heap),
+                    "begin" => return eval_begin(list, env, heap),
+                    "let" => return eval_let(list, env, heap),
 
                     // ── explicit tail-call form ────────────────────────────
                     //
@@ -184,9 +182,12 @@ fn eval_step(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Step, String> {
                         // second eval has its own trampoline internally.
                         if let Ok(Expr::Macro(params, body)) = env_get(heap, env, op) {
                             let substituted = expand_macro(&params, &body, &list[1..])?;
-                            let expanded    = eval(&substituted, env, heap)?;
+                            let expanded = eval(&substituted, env, heap)?;
                             // The expanded form is in tail position — trampoline it.
-                            return Ok(Step::TailCall { expr: expanded, env });
+                            return Ok(Step::TailCall {
+                                expr: expanded,
+                                env,
+                            });
                         }
                     }
                 }
@@ -217,9 +218,15 @@ fn eval_if(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Step, String> {
     }
     let cond = eval(&list[1], env, heap)?;
     if is_truthy(&cond) {
-        Ok(Step::TailCall { expr: list[2].clone(), env })
+        Ok(Step::TailCall {
+            expr: list[2].clone(),
+            env,
+        })
     } else if list.len() > 3 {
-        Ok(Step::TailCall { expr: list[3].clone(), env })
+        Ok(Step::TailCall {
+            expr: list[3].clone(),
+            env,
+        })
     } else {
         Ok(Step::Value(Expr::List(vec![])))
     }
@@ -274,7 +281,7 @@ fn eval_defmacro(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Expr, Strin
     }
     if let Expr::Symbol(name) = &list[1] {
         let params = parse_params(&list[2])?;
-        let mac    = Expr::Macro(params, Box::new(list[3].clone()));
+        let mac = Expr::Macro(params, Box::new(list[3].clone()));
         env_set(heap, env, name.clone(), mac.clone());
         Ok(mac)
     } else {
@@ -296,7 +303,10 @@ fn eval_begin(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Step, String> 
         eval(e, env, heap)?;
     }
     // Last expression is in tail position.
-    Ok(Step::TailCall { expr: body[body.len() - 1].clone(), env })
+    Ok(Step::TailCall {
+        expr: body[body.len() - 1].clone(),
+        env,
+    })
 }
 
 /// `(let ((name expr)...) body...)`
@@ -351,7 +361,10 @@ fn eval_let(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Step, String> {
         eval(e, new_e, heap)?;
     }
     // Last body expression is in tail position — trampoline into new_e.
-    Ok(Step::TailCall { expr: body[body.len() - 1].clone(), env: new_e })
+    Ok(Step::TailCall {
+        expr: body[body.len() - 1].clone(),
+        env: new_e,
+    })
 }
 
 // ── function application ──────────────────────────────────────────────────────
@@ -363,10 +376,10 @@ fn eval_let(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Step, String> {
 /// that it can be included in the GC root set when a collection is triggered
 /// inside this call.
 fn apply_step(
-    func:          Expr,
-    args:          &[Expr],
+    func: Expr,
+    args: &[Expr],
     call_site_env: Env,
-    heap:          &mut Heap,
+    heap: &mut Heap,
 ) -> Result<Step, String> {
     match func {
         Expr::Func(f) => {
@@ -417,7 +430,10 @@ fn apply_step(
             // return a Step::TailCall so the trampoline loop in `eval` picks
             // it up on the next iteration — no new Rust stack frame is created
             // for the lambda body.
-            Ok(Step::TailCall { expr: *body, env: call_frame })
+            Ok(Step::TailCall {
+                expr: *body,
+                env: call_frame,
+            })
         }
 
         other => Err(format!("not a function: {:?}", other)),

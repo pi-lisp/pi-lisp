@@ -7,7 +7,7 @@ use std::fmt;
 // Interval Syntax
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum I {
     I0,
     I1,
@@ -30,7 +30,7 @@ impl fmt::Display for I {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Literal {
     Pos(i32),
     NegVar(i32),
@@ -46,7 +46,7 @@ impl fmt::Display for Literal {
 }
 
 // DNF = Disjunctive Normal Form: a set of cubes, each cube a set of literals.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DNF {
     pub cubes: BTreeSet<BTreeSet<Literal>>,
 }
@@ -97,13 +97,20 @@ pub fn dnf_bot() -> DNF {
 fn simplify(cubes: BTreeSet<BTreeSet<Literal>>) -> BTreeSet<BTreeSet<Literal>> {
     cubes
         .iter()
+        .filter(|c| cube_consistent(c))
         .filter(|c| {
             !cubes
                 .iter()
+                .filter(|other| cube_consistent(other))
                 .any(|other| other != *c && other.is_subset(c))
         })
         .cloned()
         .collect()
+}
+
+/// A cube is contradictory when it contains both `i` and `¬i`.
+pub fn cube_consistent(cube: &BTreeSet<Literal>) -> bool {
+    cube.iter().all(|lit| !cube.contains(&neg_lit(lit)))
 }
 
 /// Evaluate an interval expression to its DNF.
@@ -138,7 +145,9 @@ pub fn dnf_meet(a: &DNF, b: &DNF) -> DNF {
     for ca in &a.cubes {
         for cb in &b.cubes {
             let merged: BTreeSet<_> = ca.union(cb).cloned().collect();
-            product.insert(merged);
+            if cube_consistent(&merged) {
+                product.insert(merged);
+            }
         }
     }
     DNF {
@@ -175,5 +184,41 @@ fn neg_lit(l: &Literal) -> Literal {
     match l {
         Literal::Pos(n) => Literal::NegVar(*n),
         Literal::NegVar(n) => Literal::Pos(*n),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meet_drops_contradictory_cube() {
+        let dnf = eval_interval(&I::Meet(
+            Box::new(I::IVar(0)),
+            Box::new(I::Neg(Box::new(I::IVar(0)))),
+        ));
+
+        assert_eq!(dnf, dnf_bot());
+    }
+
+    #[test]
+    fn simplify_drops_inconsistent_cubes_before_absorption() {
+        let mut inconsistent = BTreeSet::new();
+        inconsistent.insert(Literal::Pos(0));
+        inconsistent.insert(Literal::NegVar(0));
+
+        let mut consistent = BTreeSet::new();
+        consistent.insert(Literal::Pos(1));
+
+        let dnf = dnf_join(
+            &DNF {
+                cubes: [inconsistent].into_iter().collect(),
+            },
+            &DNF {
+                cubes: [consistent.clone()].into_iter().collect(),
+            },
+        );
+
+        assert_eq!(dnf.cubes, [consistent].into_iter().collect());
     }
 }

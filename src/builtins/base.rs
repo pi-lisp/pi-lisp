@@ -108,9 +108,9 @@ pub fn register_comparisons(env: Env, heap: &mut Heap) {
         };
     }
 
-    env_set(heap, env, "=".into(),  cmp_fn!(==));
-    env_set(heap, env, "<".into(),  cmp_fn!(<));
-    env_set(heap, env, ">".into(),  cmp_fn!(>));
+    env_set(heap, env, "=".into(), cmp_fn!(==));
+    env_set(heap, env, "<".into(), cmp_fn!(<));
+    env_set(heap, env, ">".into(), cmp_fn!(>));
     env_set(heap, env, "<=".into(), cmp_fn!(<=));
     env_set(heap, env, ">=".into(), cmp_fn!(>=));
 
@@ -175,7 +175,7 @@ pub fn register_lists(env: Env, heap: &mut Heap) {
             let mut result = vec![args[0].clone()];
             match &args[1] {
                 Expr::List(l) => result.extend(l.clone()),
-                other         => result.push(other.clone()),
+                other => result.push(other.clone()),
             }
             Ok(Expr::List(result))
         })),
@@ -187,7 +187,7 @@ pub fn register_lists(env: Env, heap: &mut Heap) {
         "null?".into(),
         Expr::Func(Rc::new(|args, _heap| match &args[0] {
             Expr::List(l) => Ok(Expr::Number(if l.is_empty() { 1.0 } else { 0.0 })),
-            _             => Ok(Expr::Number(0.0)),
+            _ => Ok(Expr::Number(0.0)),
         })),
     );
 }

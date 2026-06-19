@@ -1,4 +1,7 @@
-use std::{cell::RefCell, io::{self, BufRead, BufReader}};
+use std::{
+    cell::RefCell,
+    io::{self, BufRead, BufReader},
+};
 
 // A thread-local stdin buffer shared between the REPL and (read-line).
 // Both the REPL loop and the builtin pull lines from the same BufReader,
@@ -18,7 +21,9 @@ pub fn shared_read_line() -> Result<Option<String>, String> {
             Ok(_) => {
                 if line.ends_with('\n') {
                     line.pop();
-                    if line.ends_with('\r') { line.pop(); }
+                    if line.ends_with('\r') {
+                        line.pop();
+                    }
                 }
                 Ok(Some(line))
             }

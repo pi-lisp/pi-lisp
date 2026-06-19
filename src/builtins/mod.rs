@@ -1,6 +1,6 @@
 mod asm;
-mod cubical;
 mod base;
+mod cubical;
 mod utils;
 
 use crate::env::{Env, new_env};
@@ -28,7 +28,7 @@ pub(crate) fn str_arg(e: &Expr) -> Result<&str, String> {
 pub(crate) fn display_str(e: &Expr) -> String {
     match e {
         Expr::Str(s) => s.clone(),
-        other        => format!("{:?}", other),
+        other => format!("{:?}", other),
     }
 }
 

@@ -25,8 +25,8 @@ impl Register {
     /// prefix; only the low 3 bits are returned here.
     pub fn code(self) -> u8 {
         match self {
-            Register::RAX | Register::R8  => 0,
-            Register::RCX | Register::R9  => 1,
+            Register::RAX | Register::R8 => 0,
+            Register::RCX | Register::R9 => 1,
             Register::RDX | Register::R10 => 2,
             Register::RBX | Register::R11 => 3,
             Register::RSP | Register::R12 => 4,
@@ -63,8 +63,8 @@ impl std::fmt::Display for Register {
             Register::RBP => "rbp",
             Register::RSI => "rsi",
             Register::RDI => "rdi",
-            Register::R8  => "r8",
-            Register::R9  => "r9",
+            Register::R8 => "r8",
+            Register::R9 => "r9",
             Register::R10 => "r10",
             Register::R11 => "r11",
             Register::R12 => "r12",

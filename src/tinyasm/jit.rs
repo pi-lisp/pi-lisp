@@ -133,11 +133,7 @@ impl JitMemory {
         // - `self.addr + self.written` is within the mmap region.
         // - `code` is a valid Rust slice.
         unsafe {
-            ptr::copy_nonoverlapping(
-                code.as_ptr(),
-                self.addr.add(self.written),
-                code.len(),
-            );
+            ptr::copy_nonoverlapping(code.as_ptr(), self.addr.add(self.written), code.len());
         }
 
         self.written = new_written;
@@ -223,11 +219,7 @@ impl Drop for JitMemory {
             //
             // Errors from mprotect/munmap are intentionally ignored in Drop
             // (we cannot propagate them), but the sequence is best-effort.
-            libc::mprotect(
-                self.addr as *mut libc::c_void,
-                self.size,
-                libc::PROT_NONE,
-            );
+            libc::mprotect(self.addr as *mut libc::c_void, self.size, libc::PROT_NONE);
             libc::munmap(self.addr as *mut libc::c_void, self.size);
         }
     }

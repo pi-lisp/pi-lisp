@@ -17,9 +17,9 @@ impl fmt::Display for EncodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             EncodeError::UnsupportedOperand(msg) => write!(f, "Unsupported operand: {}", msg),
-            EncodeError::InvalidScale(scale)     => write!(f, "Invalid scale: {}", scale),
-            EncodeError::InvalidDisplacement(msg)=> write!(f, "Invalid displacement: {}", msg),
-            EncodeError::Other(msg)              => write!(f, "Encoding error: {}", msg),
+            EncodeError::InvalidScale(scale) => write!(f, "Invalid scale: {}", scale),
+            EncodeError::InvalidDisplacement(msg) => write!(f, "Invalid displacement: {}", msg),
+            EncodeError::Other(msg) => write!(f, "Encoding error: {}", msg),
         }
     }
 }
@@ -32,17 +32,22 @@ impl std::error::Error for EncodeError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryAddr {
-    pub base:  Option<Register>,
+    pub base: Option<Register>,
     pub index: Option<Register>,
     /// Must be 1, 2, 4, or 8.  Ignored when `index` is `None`.
     pub scale: u8,
-    pub disp:  i32,
+    pub disp: i32,
 }
 
 impl MemoryAddr {
     /// Convenience constructor for simple `[reg]` or `[reg + disp]` addressing.
     pub fn base_disp(base: Register, disp: i32) -> Self {
-        Self { base: Some(base), index: None, scale: 1, disp }
+        Self {
+            base: Some(base),
+            index: None,
+            scale: 1,
+            disp,
+        }
     }
 }
 
@@ -82,11 +87,11 @@ pub enum Operand {
 impl fmt::Display for Operand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Operand::Reg(r)              => write!(f, "{}", r),
-            Operand::Imm64(v)            => write!(f, "0x{:X}", v),
+            Operand::Reg(r) => write!(f, "{}", r),
+            Operand::Imm64(v) => write!(f, "0x{:X}", v),
             Operand::Imm32(v) if *v < 0 => write!(f, "{}", v),
-            Operand::Imm32(v)            => write!(f, "0x{:X}", v),
-            Operand::Mem(m)              => write!(f, "qword {}", m),
+            Operand::Imm32(v) => write!(f, "0x{:X}", v),
+            Operand::Mem(m) => write!(f, "qword {}", m),
         }
     }
 }
@@ -108,9 +113,9 @@ pub enum Instruction {
     // Arithmetic
     Add(Operand, Operand),
     Sub(Operand, Operand),
-    IMul(Operand, Operand),   // signed multiply: dst *= src
-    Mul(Operand),             // unsigned RDX:RAX = RAX * op
-    Div(Operand),             // unsigned RAX / op
+    IMul(Operand, Operand), // signed multiply: dst *= src
+    Mul(Operand),           // unsigned RDX:RAX = RAX * op
+    Div(Operand),           // unsigned RAX / op
 
     // Bitwise / shift
     And(Operand, Operand),
@@ -143,34 +148,34 @@ pub enum Instruction {
 impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Instruction::Mov(d, s)     => write!(f, "mov {}, {}", d, s),
-            Instruction::Lea(d, s)     => write!(f, "lea {}, {}", d, s),
-            Instruction::Push(o)       => write!(f, "push {}", o),
-            Instruction::Pop(o)        => write!(f, "pop {}", o),
-            Instruction::Add(d, s)     => write!(f, "add {}, {}", d, s),
-            Instruction::Sub(d, s)     => write!(f, "sub {}, {}", d, s),
-            Instruction::IMul(d, s)    => write!(f, "imul {}, {}", d, s),
-            Instruction::Mul(o)        => write!(f, "mul {}", o),
-            Instruction::Div(o)        => write!(f, "div {}", o),
-            Instruction::And(d, s)     => write!(f, "and {}, {}", d, s),
-            Instruction::Or(d, s)      => write!(f, "or {}, {}", d, s),
-            Instruction::Xor(d, s)     => write!(f, "xor {}, {}", d, s),
-            Instruction::Not(o)        => write!(f, "not {}", o),
-            Instruction::Shl(d, c)     => write!(f, "shl {}, {}", d, c),
-            Instruction::Shr(d, c)     => write!(f, "shr {}, {}", d, c),
-            Instruction::Cmp(d, s)     => write!(f, "cmp {}, {}", d, s),
-            Instruction::Test(d, s)    => write!(f, "test {}, {}", d, s),
-            Instruction::Call(o)       => write!(f, "call {}", o),
-            Instruction::Ret           => write!(f, "ret"),
-            Instruction::Syscall       => write!(f, "syscall"),
-            Instruction::Label(n)      => write!(f, "{}:", n),
-            Instruction::JmpLabel(t)   => write!(f, "jmp {}", t),
-            Instruction::JeLabel(t)    => write!(f, "je {}", t),
-            Instruction::JneLabel(t)   => write!(f, "jne {}", t),
-            Instruction::JlLabel(t)    => write!(f, "jl {}", t),
-            Instruction::JleLabel(t)   => write!(f, "jle {}", t),
-            Instruction::JgeLabel(t)   => write!(f, "jge {}", t),
-            Instruction::JgLabel(t)    => write!(f, "jg {}", t),
+            Instruction::Mov(d, s) => write!(f, "mov {}, {}", d, s),
+            Instruction::Lea(d, s) => write!(f, "lea {}, {}", d, s),
+            Instruction::Push(o) => write!(f, "push {}", o),
+            Instruction::Pop(o) => write!(f, "pop {}", o),
+            Instruction::Add(d, s) => write!(f, "add {}, {}", d, s),
+            Instruction::Sub(d, s) => write!(f, "sub {}, {}", d, s),
+            Instruction::IMul(d, s) => write!(f, "imul {}, {}", d, s),
+            Instruction::Mul(o) => write!(f, "mul {}", o),
+            Instruction::Div(o) => write!(f, "div {}", o),
+            Instruction::And(d, s) => write!(f, "and {}, {}", d, s),
+            Instruction::Or(d, s) => write!(f, "or {}, {}", d, s),
+            Instruction::Xor(d, s) => write!(f, "xor {}, {}", d, s),
+            Instruction::Not(o) => write!(f, "not {}", o),
+            Instruction::Shl(d, c) => write!(f, "shl {}, {}", d, c),
+            Instruction::Shr(d, c) => write!(f, "shr {}, {}", d, c),
+            Instruction::Cmp(d, s) => write!(f, "cmp {}, {}", d, s),
+            Instruction::Test(d, s) => write!(f, "test {}, {}", d, s),
+            Instruction::Call(o) => write!(f, "call {}", o),
+            Instruction::Ret => write!(f, "ret"),
+            Instruction::Syscall => write!(f, "syscall"),
+            Instruction::Label(n) => write!(f, "{}:", n),
+            Instruction::JmpLabel(t) => write!(f, "jmp {}", t),
+            Instruction::JeLabel(t) => write!(f, "je {}", t),
+            Instruction::JneLabel(t) => write!(f, "jne {}", t),
+            Instruction::JlLabel(t) => write!(f, "jl {}", t),
+            Instruction::JleLabel(t) => write!(f, "jle {}", t),
+            Instruction::JgeLabel(t) => write!(f, "jge {}", t),
+            Instruction::JgLabel(t) => write!(f, "jg {}", t),
         }
     }
 }
@@ -230,17 +235,16 @@ fn encode_mem_parts(
 
     // RSP/R12 share the 3-bit code 0b100 with the "SIB follows" sentinel, so
     // any addressing using them as the base *must* include a SIB byte.
-    let use_sib = mem.index.is_some()
-        || mem.base == Some(Register::RSP)
-        || mem.base == Some(Register::R12);
+    let use_sib =
+        mem.index.is_some() || mem.base == Some(Register::RSP) || mem.base == Some(Register::R12);
 
     let rm_bits = if use_sib {
         0x04 // "SIB byte present"
     } else {
         mem.base
-            .ok_or_else(|| EncodeError::Other(
-                "Memory operand with no base register and no SIB".into()
-            ))?
+            .ok_or_else(|| {
+                EncodeError::Other("Memory operand with no base register and no SIB".into())
+            })?
             .code()
     };
 
@@ -250,12 +254,15 @@ fn encode_mem_parts(
 
     let sib = if use_sib {
         let scale_bits = match mem.scale {
-            1 => 0u8, 2 => 1, 4 => 2, 8 => 3,
+            1 => 0u8,
+            2 => 1,
+            4 => 2,
+            8 => 3,
             s => return Err(EncodeError::InvalidScale(s)),
         };
         // No index → encode index field as 0b100 (no-index sentinel).
         let index_bits = mem.index.map(|r| r.code()).unwrap_or(0x04);
-        let base_bits  = mem.base.map(|r| r.code()).unwrap_or(0x05);
+        let base_bits = mem.base.map(|r| r.code()).unwrap_or(0x05);
         Some((scale_bits << 6) | (index_bits << 3) | base_bits)
     } else {
         None
@@ -276,34 +283,34 @@ pub fn encode_instruction(instr: Instruction) -> Result<Vec<u8>, EncodeError> {
     let mut bytes = Vec::new();
     match instr {
         // Data movement
-        Instruction::Mov(dst, src)  => encode_mov(dst, src, &mut bytes)?,
-        Instruction::Lea(dst, src)  => encode_lea(dst, src, &mut bytes)?,
-        Instruction::Push(op)       => encode_push(op, &mut bytes)?,
-        Instruction::Pop(op)        => encode_pop(op, &mut bytes)?,
+        Instruction::Mov(dst, src) => encode_mov(dst, src, &mut bytes)?,
+        Instruction::Lea(dst, src) => encode_lea(dst, src, &mut bytes)?,
+        Instruction::Push(op) => encode_push(op, &mut bytes)?,
+        Instruction::Pop(op) => encode_pop(op, &mut bytes)?,
 
         // Arithmetic
-        Instruction::Add(d, s)      => encode_arithmetic(0x01, 0x03, 0, d, s, &mut bytes)?,
-        Instruction::Sub(d, s)      => encode_arithmetic(0x29, 0x2B, 5, d, s, &mut bytes)?,
-        Instruction::IMul(d, s)     => encode_imul(d, s, &mut bytes)?,
-        Instruction::Mul(op)        => encode_unary(0xF7, 4, op, &mut bytes)?,
-        Instruction::Div(op)        => encode_unary(0xF7, 6, op, &mut bytes)?,
+        Instruction::Add(d, s) => encode_arithmetic(0x01, 0x03, 0, d, s, &mut bytes)?,
+        Instruction::Sub(d, s) => encode_arithmetic(0x29, 0x2B, 5, d, s, &mut bytes)?,
+        Instruction::IMul(d, s) => encode_imul(d, s, &mut bytes)?,
+        Instruction::Mul(op) => encode_unary(0xF7, 4, op, &mut bytes)?,
+        Instruction::Div(op) => encode_unary(0xF7, 6, op, &mut bytes)?,
 
         // Bitwise / shift
-        Instruction::And(d, s)      => encode_arithmetic(0x21, 0x23, 4, d, s, &mut bytes)?,
-        Instruction::Or(d, s)       => encode_arithmetic(0x09, 0x0B, 1, d, s, &mut bytes)?,
-        Instruction::Xor(d, s)      => encode_arithmetic(0x31, 0x33, 6, d, s, &mut bytes)?,
-        Instruction::Not(op)        => encode_unary(0xF7, 2, op, &mut bytes)?,
-        Instruction::Shl(d, c)      => encode_shift(4, d, c, &mut bytes)?,
-        Instruction::Shr(d, c)      => encode_shift(5, d, c, &mut bytes)?,
+        Instruction::And(d, s) => encode_arithmetic(0x21, 0x23, 4, d, s, &mut bytes)?,
+        Instruction::Or(d, s) => encode_arithmetic(0x09, 0x0B, 1, d, s, &mut bytes)?,
+        Instruction::Xor(d, s) => encode_arithmetic(0x31, 0x33, 6, d, s, &mut bytes)?,
+        Instruction::Not(op) => encode_unary(0xF7, 2, op, &mut bytes)?,
+        Instruction::Shl(d, c) => encode_shift(4, d, c, &mut bytes)?,
+        Instruction::Shr(d, c) => encode_shift(5, d, c, &mut bytes)?,
 
         // Compare / test
-        Instruction::Cmp(d, s)      => encode_arithmetic(0x39, 0x3B, 7, d, s, &mut bytes)?,
-        Instruction::Test(d, s)     => encode_test(d, s, &mut bytes)?,
+        Instruction::Cmp(d, s) => encode_arithmetic(0x39, 0x3B, 7, d, s, &mut bytes)?,
+        Instruction::Test(d, s) => encode_test(d, s, &mut bytes)?,
 
         // Control flow
-        Instruction::Call(op)       => encode_call(op, &mut bytes)?,
-        Instruction::Ret            => bytes.push(0xC3),
-        Instruction::Syscall        => bytes.extend_from_slice(&[0x0F, 0x05]),
+        Instruction::Call(op) => encode_call(op, &mut bytes)?,
+        Instruction::Ret => bytes.push(0xC3),
+        Instruction::Syscall => bytes.extend_from_slice(&[0x0F, 0x05]),
 
         // Labels / jumps — must be handled by Assembler.
         Instruction::Label(_)
@@ -354,7 +361,9 @@ fn encode_mov(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), Enc
             bytes.push(rex_w(dst_r.is_extended(), rex_x, rex_b));
             bytes.push(0x8B);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
         // MOV [mem], r64  →  REX.W 89 /r
@@ -363,12 +372,16 @@ fn encode_mov(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), Enc
             bytes.push(rex_w(src_r.is_extended(), rex_x, rex_b));
             bytes.push(0x89);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
-        _ => return Err(EncodeError::UnsupportedOperand(
-            "MOV: unsupported operand combination".into()
-        )),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "MOV: unsupported operand combination".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -388,15 +401,21 @@ fn encode_lea(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), Enc
             bytes.push(rex_w(dst_r.is_extended(), rex_x, rex_b));
             bytes.push(0x8D);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
-        (Operand::Reg(_), _) => return Err(EncodeError::UnsupportedOperand(
-            "LEA: source must be a memory operand".into()
-        )),
-        _ => return Err(EncodeError::UnsupportedOperand(
-            "LEA: destination must be a register".into()
-        )),
+        (Operand::Reg(_), _) => {
+            return Err(EncodeError::UnsupportedOperand(
+                "LEA: source must be a memory operand".into(),
+            ));
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "LEA: destination must be a register".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -409,7 +428,9 @@ fn encode_push(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
     match op {
         // PUSH r64  →  (REX.B?) 50+rd
         Operand::Reg(r) => {
-            if r.is_extended() { bytes.push(0x41); } // REX.B
+            if r.is_extended() {
+                bytes.push(0x41);
+            } // REX.B
             bytes.push(0x50 + r.code());
         }
         // PUSH imm32 (sign-extended to 64 bits)  →  68 id
@@ -428,10 +449,16 @@ fn encode_push(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
             bytes.push(rex_w(false, rex_x, rex_b));
             bytes.push(0xFF);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
-        _ => return Err(EncodeError::UnsupportedOperand("PUSH: unsupported operand".into())),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "PUSH: unsupported operand".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -440,7 +467,9 @@ fn encode_pop(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
     match op {
         // POP r64  →  (REX.B?) 58+rd
         Operand::Reg(r) => {
-            if r.is_extended() { bytes.push(0x41); } // REX.B
+            if r.is_extended() {
+                bytes.push(0x41);
+            } // REX.B
             bytes.push(0x58 + r.code());
         }
         // POP [mem]  →  REX.W 8F /0
@@ -449,10 +478,16 @@ fn encode_pop(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
             bytes.push(rex_w(false, rex_x, rex_b));
             bytes.push(0x8F);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
-        _ => return Err(EncodeError::UnsupportedOperand("POP: unsupported operand".into())),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "POP: unsupported operand".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -474,7 +509,9 @@ fn encode_imul(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), En
             bytes.push(rex_w(dst_r.is_extended(), rex_x, rex_b));
             bytes.extend_from_slice(&[0x0F, 0xAF]);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
         // IMUL r64, r/m64, imm8  →  REX.W 6B /r ib
@@ -492,9 +529,11 @@ fn encode_imul(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), En
             bytes.push(0xC0 | (dst_r.code() << 3) | dst_r.code());
             bytes.extend_from_slice(&imm.to_le_bytes());
         }
-        _ => return Err(EncodeError::UnsupportedOperand(
-            "IMUL: destination must be a register".into()
-        )),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "IMUL: destination must be a register".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -507,7 +546,9 @@ fn encode_call(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
     match op {
         // CALL r64  →  (REX.B?) FF /2
         Operand::Reg(r) => {
-            if r.is_extended() { bytes.push(0x41); }
+            if r.is_extended() {
+                bytes.push(0x41);
+            }
             bytes.push(0xFF);
             bytes.push(0xD0 | r.code()); // ModR/M: mod=11, reg=2, rm=r
         }
@@ -517,12 +558,16 @@ fn encode_call(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
             bytes.push(rex_w(false, rex_x, rex_b));
             bytes.push(0xFF);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
-        _ => return Err(EncodeError::UnsupportedOperand(
-            "CALL: operand must be a register or memory".into()
-        )),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "CALL: operand must be a register or memory".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -537,8 +582,8 @@ fn encode_call(op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
 /// - `op_rm`   — opcode for `reg, reg/mem`  (e.g. `0x03` for ADD)
 /// - `ext_idx` — `/digit` extension for the immediate form (e.g. `0` for ADD)
 fn encode_arithmetic(
-    op_mr:   u8,
-    op_rm:   u8,
+    op_mr: u8,
+    op_rm: u8,
     ext_idx: u8,
     dst: Operand,
     src: Operand,
@@ -557,7 +602,9 @@ fn encode_arithmetic(
             bytes.push(rex_w(dst_r.is_extended(), rex_x, rex_b));
             bytes.push(op_rm);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
         // op [mem], r64
@@ -566,7 +613,9 @@ fn encode_arithmetic(
             bytes.push(rex_w(src_r.is_extended(), rex_x, rex_b));
             bytes.push(op_mr);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
         // op r/m64, imm8 (sign-extended) or imm32
@@ -587,12 +636,16 @@ fn encode_arithmetic(
                     bytes.push(rex_w(false, rex_x, rex_b));
                     bytes.push(opcode);
                     bytes.push(modrm);
-                    if let Some(s) = sib { bytes.push(s); }
+                    if let Some(s) = sib {
+                        bytes.push(s);
+                    }
                     push_displacement(mem.disp, disp_sz, bytes);
                 }
-                _ => return Err(EncodeError::UnsupportedOperand(
-                    "Arithmetic Imm: destination must be register or memory".into()
-                )),
+                _ => {
+                    return Err(EncodeError::UnsupportedOperand(
+                        "Arithmetic Imm: destination must be register or memory".into(),
+                    ));
+                }
             }
             if is_imm8 {
                 bytes.push(imm as u8);
@@ -600,7 +653,11 @@ fn encode_arithmetic(
                 bytes.extend_from_slice(&imm.to_le_bytes());
             }
         }
-        _ => return Err(EncodeError::UnsupportedOperand("Arithmetic: unsupported operands".into())),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "Arithmetic: unsupported operands".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -624,7 +681,11 @@ fn encode_test(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), En
             bytes.push(0xC0 | r.code()); // /0
             bytes.extend_from_slice(&imm.to_le_bytes());
         }
-        _ => return Err(EncodeError::UnsupportedOperand("TEST: unsupported operands".into())),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "TEST: unsupported operands".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -635,17 +696,19 @@ fn encode_test(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), En
 
 fn encode_shift(
     ext_idx: u8,
-    dst:   Operand,
+    dst: Operand,
     count: Operand,
     bytes: &mut Vec<u8>,
 ) -> Result<(), EncodeError> {
     let (opcode, emit_imm) = match count {
         Operand::Reg(Register::RCX) => (0xD3u8, false), // shift by CL
-        Operand::Imm32(1)           => (0xD1,   false), // shift by 1 (implicit)
-        Operand::Imm32(_)           => (0xC1,   true),  // shift by imm8
-        _ => return Err(EncodeError::UnsupportedOperand(
-            "Shift count must be CL register or an immediate".into()
-        )),
+        Operand::Imm32(1) => (0xD1, false),             // shift by 1 (implicit)
+        Operand::Imm32(_) => (0xC1, true),              // shift by imm8
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "Shift count must be CL register or an immediate".into(),
+            ));
+        }
     };
 
     match dst {
@@ -659,10 +722,16 @@ fn encode_shift(
             bytes.push(rex_w(false, rex_x, rex_b));
             bytes.push(opcode);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
-        _ => return Err(EncodeError::UnsupportedOperand("Shift dst must be register or memory".into())),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "Shift dst must be register or memory".into(),
+            ));
+        }
     }
 
     if emit_imm {
@@ -677,7 +746,12 @@ fn encode_shift(
 // Unary (NOT / MUL / DIV)
 // ---------------------------------------------------------------------------
 
-fn encode_unary(opcode: u8, ext_idx: u8, op: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+fn encode_unary(
+    opcode: u8,
+    ext_idx: u8,
+    op: Operand,
+    bytes: &mut Vec<u8>,
+) -> Result<(), EncodeError> {
     match op {
         Operand::Reg(r) => {
             bytes.push(rex_w(false, false, r.is_extended()));
@@ -689,10 +763,16 @@ fn encode_unary(opcode: u8, ext_idx: u8, op: Operand, bytes: &mut Vec<u8>) -> Re
             bytes.push(rex_w(false, rex_x, rex_b));
             bytes.push(opcode);
             bytes.push(modrm);
-            if let Some(s) = sib { bytes.push(s); }
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
             push_displacement(mem.disp, disp_sz, bytes);
         }
-        _ => return Err(EncodeError::UnsupportedOperand("Unary: operand must be register or memory".into())),
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "Unary: operand must be register or memory".into(),
+            ));
+        }
     }
     Ok(())
 }

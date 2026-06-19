@@ -29,8 +29,8 @@ pub fn expand_macro(params: &[String], body: &Expr, args: &[Expr]) -> Result<Exp
 fn substitute(expr: &Expr, subst: &HashMap<String, Expr>) -> Expr {
     match expr {
         Expr::Symbol(s) => subst.get(s).cloned().unwrap_or_else(|| expr.clone()),
-        Expr::List(l)   => Expr::List(l.iter().map(|e| substitute(e, subst)).collect()),
-        _               => expr.clone(),
+        Expr::List(l) => Expr::List(l.iter().map(|e| substitute(e, subst)).collect()),
+        _ => expr.clone(),
     }
 }
 
@@ -55,9 +55,9 @@ fn qq_op(expr: &Expr) -> Option<&str> {
 /// `heap` is required because `unquote`/`unquote-splicing` at depth 1 call
 /// back into `eval`, which needs the heap for variable lookups and allocation.
 pub fn eval_quasiquote(
-    expr:  &Expr,
-    env:   Env,
-    heap:  &mut Heap,
+    expr: &Expr,
+    env: Env,
+    heap: &mut Heap,
     depth: usize,
 ) -> Result<Expr, String> {
     match expr {
@@ -119,7 +119,7 @@ pub fn eval_quasiquote(
                                         return Err(format!(
                                             "unquote-splicing: expected a list, got {:?}",
                                             other
-                                        ))
+                                        ));
                                     }
                                 }
                             } else {

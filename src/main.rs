@@ -1,16 +1,16 @@
 mod builtins;
+mod cubical;
 mod env;
 mod eval;
 mod expr;
 mod gc;
+mod helper;
 mod macros;
 mod reader;
-mod cubical;
 mod tinyasm;
-mod helper;
 
 use eval::eval;
-use gc::{Heap, GcHandle};
+use gc::{GcHandle, Heap};
 use reader::parse_all;
 use std::fs;
 use std::io::{self, Write};
@@ -28,7 +28,7 @@ fn run(src: &str, global_env: GcHandle, heap: &mut Heap) {
             for e in exprs {
                 match eval(&e, global_env, heap) {
                     Ok(result) => println!("=> {:?}", result),
-                    Err(err)   => println!("Evaluation Error: {}", err),
+                    Err(err) => println!("Evaluation Error: {}", err),
                 }
             }
         }
@@ -74,8 +74,8 @@ fn repl(global_env: GcHandle, heap: &mut Heap) {
 /// Returns true when open parens are fully closed and input is non-empty.
 fn is_balanced(src: &str) -> bool {
     let mut depth: i32 = 0;
-    let mut in_string  = false;
-    let mut escape     = false;
+    let mut in_string = false;
+    let mut escape = false;
 
     for ch in src.chars() {
         if escape {
@@ -84,7 +84,7 @@ fn is_balanced(src: &str) -> bool {
         }
         match ch {
             '\\' if in_string => escape = true,
-            '"'               => in_string = !in_string,
+            '"' => in_string = !in_string,
             '(' | '[' if !in_string => depth += 1,
             ')' | ']' if !in_string => depth -= 1,
             _ => {}

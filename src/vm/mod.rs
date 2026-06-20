@@ -108,9 +108,9 @@ mod tests {
         let expr_lambda = parse_all("(lambda (x) x)").unwrap().remove(0);
         assert!(is_compilable(&expr_lambda));
 
-        // quasiquote with unquote: uncompilable
+        // quasiquote with unquote: compilable
         let expr6 = parse_all("`(1 ,x)").unwrap().remove(0);
-        assert!(!is_compilable(&expr6));
+        assert!(is_compilable(&expr6));
 
         // quasiquote without unquote: compilable
         let expr7 = parse_all("`(1 2 3)").unwrap().remove(0);
@@ -179,7 +179,40 @@ mod tests {
         // This still falls back to tree-walker (uses lambda)
         let res2 = eval_str("(let ((x 5)) ((lambda (y) (+ x y)) 10))", &mut heap, env).unwrap();
         assert!(matches!(res2, Expr::Number(n) if n == 15.0));
+     }
+
+    #[test]
+    fn test_vm_quasiquote() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        // 1. basic unquote
+        let res1 = eval_str("(let ((x 42)) `(the answer is ,x))", &mut heap, env).unwrap();
+        assert_eq!(format!("{:?}", res1), "(the answer is 42)");
+
+        // 2. unquote-splicing
+        let res2 = eval_str("(let ((items '(1 2 3))) `(a ,@items b))", &mut heap, env).unwrap();
+        assert_eq!(format!("{:?}", res2), "(a 1 2 3 b)");
+
+        // 3. nested quasiquote
+        let res3 = eval_str("`(a `(b ,(+ 1 2)))", &mut heap, env).unwrap();
+        assert_eq!(format!("{:?}", res3), "(a (quasiquote (b (unquote (+ 1 2)))))");
+
+        // 4. quasiquote in macro body
+        let macro_decl = "
+        (defmacro when (condition body)
+          `(if ,condition ,body ()))
+        ";
+        let exprs = parse_all(macro_decl).unwrap();
+        assert_eq!(exprs.len(), 1);
+        crate::eval::eval_tree(&exprs[0], env, &mut heap).unwrap();
+
+        let res4 = eval_str("(when (> 3 2) 77)", &mut heap, env).unwrap();
+        assert!(matches!(res4, Expr::Number(n) if n == 77.0));
     }
 }
+
+
+
 
 

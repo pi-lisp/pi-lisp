@@ -373,6 +373,38 @@ impl<'h> VM<'h> {
                     self.stack.push(VmValue::List(items));
                 }
 
+                // ── PrependList ──────────────────────────────────────────────
+                Op::PrependList => {
+                    let item = self.pop()?;
+                    let list = self.pop()?;
+                    match list {
+                        VmValue::List(mut items) => {
+                            items.insert(0, item);
+                            self.stack.push(VmValue::List(items));
+                        }
+                        other => return Err(format!("PrependList: expected list, got {:?}", other)),
+                    }
+                }
+
+                // ── AppendSplice ─────────────────────────────────────────────
+                Op::AppendSplice => {
+                    let splice = self.pop()?;
+                    let acc = self.pop()?;
+                    match (splice, acc) {
+                        (VmValue::List(mut s), VmValue::List(a)) => {
+                            s.extend(a);
+                            self.stack.push(VmValue::List(s));
+                        }
+                        other => return Err(format!("AppendSplice: expected two lists, got {:?}", other)),
+                    }
+                }
+
+                // ── LoadNil ──────────────────────────────────────────────────
+                Op::LoadNil => {
+                    self.stack.push(VmValue::List(vec![]));
+                }
+
+
                 // ── PushEnv ──────────────────────────────────────────────────
                 Op::PushEnv => {
                     let parent = self.frames[frame_idx].env;

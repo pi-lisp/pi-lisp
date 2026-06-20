@@ -206,6 +206,14 @@ pub enum Op {
     /// up at the front of the list) and push the resulting `Value::List`.
     MakeList(usize),
 
+    /// Pop item and list, and push the prepended list.
+    PrependList,
+    /// Pop splice and acc-list, and splice the items.
+    AppendSplice,
+    /// Push an empty list.
+    LoadNil,
+
+
     /// Discard the top of the stack (used to throw away the value of a
     /// non-tail expression in a `begin` sequence or a `define` side-effect).
     Pop,

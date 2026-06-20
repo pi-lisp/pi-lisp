@@ -56,9 +56,9 @@
 //! from the environment, never mutate it in a way that would affect later
 //! compilation.
 
-use crate::expr::{Expr, env_get, new_env};
+use crate::expr::{Expr, env_get};
 use crate::gc::Heap;
-use crate::macros::{eval_quasiquote, expand_macro};
+use crate::macros::expand_macro;
 use crate::reader::parse_params;
 use crate::vm::bytecode::{Chunk, Op, Value, expr_to_value};
 
@@ -126,6 +126,10 @@ fn expand_all(
                     // sub-expressions (except quoted positions).
                     "quote" => return Ok(expr.clone()), // datum is opaque
                     "quasiquote" => return Ok(expr.clone()), // handled at compile time
+                    // defmacro is always handled by the tree-walker; never
+                    // reach here in normal flow (is_compilable blocks it), but
+                    // guard defensively so expand_all never mangles it.
+                    "defmacro" => return Ok(expr.clone()),
                     "if" | "begin" | "define" | "set!" | "let" | "let*" => {
                         // Expand sub-expressions, keeping the special-form head.
                         let mut expanded = vec![list[0].clone()];
@@ -237,7 +241,16 @@ fn compile_list(
             "quote" => return compile_quote(list, chunk),
 
             // ── quasiquote ────────────────────────────────────────────────────
-            "quasiquote" => return compile_quasiquote(list, chunk, heap, env),
+            "quasiquote" => {
+                if list.len() != 2 {
+                    return Err(format!(
+                        "quasiquote expects 1 argument, got {}",
+                        list.len() - 1
+                    ));
+                }
+                return compile_quasiquote(&list[1], 1, chunk, heap, env);
+            }
+
 
             // ── if ────────────────────────────────────────────────────────────
             "if" => return compile_if(list, chunk, heap, env, tail),
@@ -284,37 +297,107 @@ fn compile_quote(list: &[Expr], chunk: &mut Chunk) -> Result<(), String> {
     Ok(())
 }
 
-// ── quasiquote ────────────────────────────────────────────────────────────────
+fn qq_op_expr(expr: &Expr) -> Option<&str> {
+    if let Expr::List(l) = expr {
+        if let Some(Expr::Symbol(s)) = l.first() {
+            return Some(s.as_str());
+        }
+    }
+    None
+}
 
-/// Compile a `quasiquote` form by fully evaluating it at compile time.
-///
-/// This works because `quasiquote` at depth 1 splices in values that are
-/// available in the environment at compile time.  Any `unquote` that refers
-/// to a runtime variable cannot be handled this way — in that case
-/// `eval_quasiquote` will fail (because the variable isn't in the temporary
-/// env) and we propagate the error.  A richer compiler would lower
-/// quasiquote to explicit `cons`/`list` calls instead; that is left for a
-/// future revision.
+/// Compile a `quasiquote` expression at the given nesting depth entirely within the VM.
 fn compile_quasiquote(
-    list: &[Expr],
+    expr: &Expr,
+    depth: usize,
     chunk: &mut Chunk,
     heap: &mut Heap,
     env: crate::expr::Env,
 ) -> Result<(), String> {
-    if list.len() != 2 {
-        return Err(format!(
-            "quasiquote expects 1 argument, got {}",
-            list.len() - 1
-        ));
+    match expr {
+        Expr::List(list) if !list.is_empty() => {
+            match qq_op_expr(expr) {
+                Some("unquote") => {
+                    if list.len() != 2 {
+                        return Err(format!(
+                            "unquote expects 1 argument, got {}",
+                            list.len() - 1
+                        ));
+                    }
+                    if depth == 1 {
+                        // Fully escape: compile the inner expression normally.
+                        compile_expr(&list[1], chunk, heap, env, false)
+                    } else {
+                        // Still nested — descend one level but keep the
+                        // `unquote` wrapper for the outer quasiquote to see.
+                        chunk.emit(Op::LoadConst(Value::Symbol("unquote".into())));
+                        compile_quasiquote(&list[1], depth - 1, chunk, heap, env)?;
+                        chunk.emit(Op::MakeList(2));
+                        Ok(())
+                    }
+                }
+
+                Some("quasiquote") => {
+                    if list.len() != 2 {
+                        return Err(format!(
+                            "quasiquote expects 1 argument, got {}",
+                            list.len() - 1
+                        ));
+                    }
+                    // Entering a nested quasiquote — increment depth.
+                    chunk.emit(Op::LoadConst(Value::Symbol("quasiquote".into())));
+                    compile_quasiquote(&list[1], depth + 1, chunk, heap, env)?;
+                    chunk.emit(Op::MakeList(2));
+                    Ok(())
+                }
+
+                _ => {
+                    // Start with empty accumulator.
+                    chunk.emit(Op::LoadNil);
+                    // Iterate items in reverse.
+                    for item in list.iter().rev() {
+                        if qq_op_expr(item) == Some("unquote-splicing") {
+                            let inner = match item {
+                                Expr::List(l) => l,
+                                _ => unreachable!(),
+                            };
+                            if inner.len() != 2 {
+                                return Err(format!(
+                                    "unquote-splicing expects 1 argument, got {}",
+                                    inner.len() - 1
+                                ));
+                            }
+                            if depth == 1 {
+                                // Evaluate and splice the resulting list inline.
+                                compile_expr(&inner[1], chunk, heap, env, false)?;
+                                chunk.emit(Op::AppendSplice);
+                            } else {
+                                // At depth > 1 reconstruct the form.
+                                chunk.emit(Op::LoadConst(Value::Symbol("unquote-splicing".into())));
+                                compile_quasiquote(&inner[1], depth - 1, chunk, heap, env)?;
+                                chunk.emit(Op::MakeList(2));
+                                chunk.emit(Op::PrependList);
+                            }
+                        } else {
+                            compile_quasiquote(item, depth, chunk, heap, env)?;
+                            chunk.emit(Op::PrependList);
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+        // Atoms (numbers, strings, symbols not in unquote position) are
+        // converted to constants and loaded.
+        _ => {
+            let val = expr_to_value(expr)
+                .map_err(|e| format!("quasiquote: cannot convert atom to Value: {}", e))?;
+            chunk.emit(Op::LoadConst(val));
+            Ok(())
+        }
     }
-    // Evaluate the quasi-quoted form using the interpreter's existing helper.
-    let result = eval_quasiquote(&list[1], env, heap, 1)
-        .map_err(|e| format!("quasiquote: {}", e))?;
-    let v = expr_to_value(&result)
-        .map_err(|e| format!("quasiquote: cannot convert result to Value: {}", e))?;
-    chunk.emit(Op::LoadConst(v));
-    Ok(())
 }
+
 
 // ── if ────────────────────────────────────────────────────────────────────────
 
@@ -803,26 +886,7 @@ fn contains_cubical(expr: &Expr) -> bool {
     }
 }
 
-/// Returns `true` if `expr` contains an `unquote` or `unquote-splicing` symbol anywhere.
-fn has_unquote_or_splicing(expr: &Expr) -> bool {
-    match expr {
-        Expr::Symbol(s) => s == "unquote" || s == "unquote-splicing",
-        Expr::List(items) => items.iter().any(has_unquote_or_splicing),
-        Expr::Lambda(_, body, _) => has_unquote_or_splicing(body),
-        Expr::Macro(_, body) => has_unquote_or_splicing(body),
-        _ => false,
-    }
-}
-
-/// Recursively check if the expression is compilable in the conservative VM scope.
-///
-/// Compilable forms: numbers, strings, symbols (as variable lookups), builtins,
-/// `if`, `begin`, `quote`, `define`, `let`, `let*`, `lambda` (whose body does
-/// not contain CubicalTerm / set! / letrec), and function calls.
-///
-/// Not compilable: `quasiquote` with runtime unquotes, `set!`, `letrec`,
-/// `CubicalTerm`, `Macro`, raw `Lambda` (tree-walker-produced).
-pub fn is_compilable(expr: &Expr) -> bool {
+fn is_compilable_rec(expr: &Expr, qq_depth: usize) -> bool {
     if contains_cubical(expr) {
         return false;
     }
@@ -830,46 +894,95 @@ pub fn is_compilable(expr: &Expr) -> bool {
         Expr::Number(_) => true,
         Expr::Str(_) => true,
         Expr::Symbol(s) => {
-            // Stand-alone variable lookup is fine unless it's a bare keyword
-            // that has no meaning outside a list form.
-            s != "letrec" && s != "unquote" && s != "unquote-splicing"
+            if qq_depth == 0 {
+                s != "letrec" && s != "unquote" && s != "unquote-splicing"
+            } else {
+                true
+            }
         }
         Expr::Func(_) => true,
-        // Raw tree-walker Lambda/Macro/CubicalTerm are not compilable.
         Expr::Lambda(..) | Expr::Macro(..) | Expr::CubicalTerm(_) => false,
         Expr::List(items) => {
             if items.is_empty() {
-                return true; // nil
+                return true;
             }
-            if let Expr::Symbol(s) = &items[0] {
-                match s.as_str() {
-                    // Still not compilable.
-                    "letrec" | "unquote" | "unquote-splicing" => return false,
-                    // set! is blocked (VM does not yet implement mutation walk).
-                    "set!" => return false,
-                    // lambda is compilable if the body contains no CubicalTerm,
-                    // set!, or letrec anywhere in its subtree.
-                    "lambda" => {
-                        return items.iter().all(is_compilable);
-                    }
-                    // define, let, let* — already compilable; recurse.
-                    "define" | "let" | "let*" => {
-                        return items.iter().all(is_compilable);
-                    }
-                    "quasiquote" => {
-                        if items.len() != 2 || has_unquote_or_splicing(&items[1]) {
+            if qq_depth > 0 {
+                // Inside quasiquote
+                match qq_op_expr(expr) {
+                    Some("unquote") => {
+                        if items.len() != 2 {
                             return false;
                         }
-                        return true;
+                        if qq_depth == 1 {
+                            is_compilable_rec(&items[1], 0)
+                        } else {
+                            is_compilable_rec(&items[1], qq_depth - 1)
+                        }
                     }
-                    "quote" => {
-                        return items.len() == 2;
+                    Some("quasiquote") => {
+                        if items.len() != 2 {
+                            return false;
+                        }
+                        is_compilable_rec(&items[1], qq_depth + 1)
                     }
-                    _ => {}
+                    _ => {
+                        // General list in quasiquote
+                        for item in items {
+                            if qq_op_expr(item) == Some("unquote-splicing") {
+                                if let Expr::List(inner) = item {
+                                    if inner.len() != 2 {
+                                        return false;
+                                    }
+                                    let next_depth = if qq_depth == 1 { 0 } else { qq_depth - 1 };
+                                    if !is_compilable_rec(&inner[1], next_depth) {
+                                        return false;
+                                    }
+                                } else {
+                                    unreachable!();
+                                }
+                            } else {
+                                if !is_compilable_rec(item, qq_depth) {
+                                    return false;
+                                }
+                            }
+                        }
+                        true
+                    }
                 }
+            } else {
+                // Outside quasiquote (qq_depth == 0)
+                if let Expr::Symbol(s) = &items[0] {
+                    match s.as_str() {
+                        "letrec" | "unquote" | "unquote-splicing" => return false,
+                        // defmacro produces Expr::Macro, which the VM cannot
+                        // construct — always fall back to the tree-walker.
+                        "defmacro" | "set!" => return false,
+                        "lambda" => {
+                            return items.iter().all(|e| is_compilable_rec(e, 0));
+                        }
+                        "define" | "let" | "let*" => {
+                            return items.iter().all(|e| is_compilable_rec(e, 0));
+                        }
+                        "quasiquote" => {
+                            if items.len() != 2 {
+                                return false;
+                            }
+                            return is_compilable_rec(&items[1], 1);
+                        }
+                        "quote" => {
+                            return items.len() == 2;
+                        }
+                        _ => {}
+                    }
+                }
+                items.iter().all(|e| is_compilable_rec(e, 0))
             }
-            // Generic list / function call: all elements must be compilable.
-            items.iter().all(is_compilable)
         }
     }
 }
+
+/// Recursively check if the expression is compilable in the conservative VM scope.
+pub fn is_compilable(expr: &Expr) -> bool {
+    is_compilable_rec(expr, 0)
+}
+

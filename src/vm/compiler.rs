@@ -258,7 +258,7 @@ fn compile_list(
             "let*" => return compile_let_star(list, chunk, heap, env, tail),
 
             // ── lambda ────────────────────────────────────────────────────────
-            "lambda" => return compile_lambda(list, chunk, heap, env),
+            "lambda" => return compile_lambda(list, chunk, heap, env, None),
 
             // Anything else falls through to function-call handling below.
             _ => {}
@@ -378,11 +378,13 @@ fn compile_if(
 
 /// Compile `(define name expr)`.
 ///
-/// Emits: `<expr>` then `StoreVar(name)`.
-/// Note: `define` is never in tail position (it always returns the value but
-/// the store itself is a side-effect); the stack value is not used by the
-/// caller in a call chain.  We leave the value on the stack so the REPL can
-/// print it, consistent with the tree-walker.
+/// Emits: `<expr>` then `StoreVar(name)` then `LoadConst(Nil)`.
+/// `StoreVar` does not push a value; the explicit `LoadConst(Nil)` ensures
+/// `define` always leaves `()` on the stack as its return value.
+///
+/// Special case: `(define name (lambda ...))` is detected so that
+/// `compile_lambda` can emit `StoreSelf(name)` at the top of the sub-chunk
+/// to support direct recursion.
 fn compile_define(
     list: &[Expr],
     chunk: &mut Chunk,
@@ -404,8 +406,28 @@ fn compile_define(
             ))
         }
     };
-    compile_expr(&list[2], chunk, heap, env, false)?;
+
+    // Detect `(define name (lambda ...))`  — compile with self-name so the
+    // closure can bind itself for direct recursion.
+    let is_lambda_rhs = matches!(
+        &list[2],
+        Expr::List(inner)
+            if !inner.is_empty()
+                && matches!(&inner[0], Expr::Symbol(s) if s == "lambda")
+    );
+
+    if is_lambda_rhs {
+        // Pass the binding name into compile_lambda so it emits StoreSelf.
+        if let Expr::List(lambda_list) = &list[2] {
+            compile_lambda(lambda_list, chunk, heap, env, Some(name.clone()))?;
+        }
+    } else {
+        compile_expr(&list[2], chunk, heap, env, false)?;
+    }
+
     chunk.emit(Op::StoreVar(name));
+    // define returns () — StoreVar does not push, so push it explicitly.
+    chunk.emit(Op::LoadConst(Value::Nil));
     Ok(())
 }
 
@@ -479,13 +501,19 @@ fn compile_begin(
 /// Compile `(let ((name expr)...) body...)`.
 ///
 /// Standard `let` semantics: all binding initialisers are evaluated in the
-/// *outer* environment before any binding is created.
+/// *outer* environment before any binding is created.  The bindings are
+/// visible only inside the body — we bracket them with `PushEnv`/`PopEnv`
+/// so the VM allocates a fresh child frame before storing them and restores
+/// the parent frame after the body.
 ///
-/// Bytecode strategy: since the VM (phase 2) will manage environments at
-/// runtime, we lower `let` to a sequence of `StoreVar` instructions that
-/// bind names in the current frame.  This is a simplification: a more
-/// sophisticated compiler would push a new environment frame.  Phase 1 just
-/// needs correct bytecode structure; the VM handles the frame semantics.
+/// Bytecode layout:
+/// ```text
+/// [compile all RHS in outer env]     ; all initialisers evaluated first
+/// PushEnv                            ; allocate child frame
+/// StoreVar(nameN-1) … StoreVar(name0); store in reverse order
+/// [body expressions]
+/// PopEnv                             ; restore parent frame
+/// ```
 fn compile_let(
     list: &[Expr],
     chunk: &mut Chunk,
@@ -509,7 +537,7 @@ fn compile_let(
         }
     };
 
-    // Collect names and compile all initialisers first (outer-env semantics).
+    // Phase 1: Evaluate all initialisers in the *outer* environment.
     let mut names = Vec::new();
     for b in bindings {
         match b {
@@ -533,23 +561,31 @@ fn compile_let(
         }
     }
 
-    // Now store the values (they're on the stack in reverse order).
-    // We emit stores in reverse so the last-pushed value is stored first.
+    // Phase 2: Open a child scope, then store the values.
+    // All RHS values are on the stack in push order; store in reverse so
+    // the stack pops them back in declaration order.
+    chunk.emit(Op::PushEnv);
     for name in names.iter().rev() {
         chunk.emit(Op::StoreVar(name.clone()));
     }
 
-    // Compile the body expressions.
+    // Phase 3: Compile the body expressions.
     let body = &list[2..];
     if body.is_empty() {
         chunk.emit(Op::LoadConst(Value::Nil));
+        chunk.emit(Op::PopEnv);
         return Ok(());
     }
     for expr in &body[..body.len() - 1] {
         compile_expr(expr, chunk, heap, env, false)?;
         chunk.emit(Op::Pop);
     }
-    compile_expr(body.last().unwrap(), chunk, heap, env, tail)
+    // Last body expr — not in tail position because we need PopEnv after it.
+    compile_expr(body.last().unwrap(), chunk, heap, env, false)?;
+    chunk.emit(Op::PopEnv);
+    // If the caller wanted tail position, the value is already on the stack.
+    let _ = tail; // tail TCO inside let is deferred to future work
+    Ok(())
 }
 
 // ── let* ──────────────────────────────────────────────────────────────────────
@@ -557,7 +593,19 @@ fn compile_let(
 /// Compile `(let* ((name expr)...) body...)`.
 ///
 /// Sequential `let` semantics: each binding can see the previous ones.
-/// Lowered to a sequence of compile-then-store pairs.
+/// The entire `let*` body runs in a child scope opened by `PushEnv`.
+/// Each binding is evaluated then immediately stored so that later bindings
+/// can reference earlier ones.
+///
+/// Bytecode layout:
+/// ```text
+/// PushEnv
+/// [compile rhs0] ; StoreVar(name0)
+/// [compile rhs1] ; StoreVar(name1)   ← can reference name0
+/// …
+/// [body expressions]
+/// PopEnv
+/// ```
 fn compile_let_star(
     list: &[Expr],
     chunk: &mut Chunk,
@@ -580,6 +628,9 @@ fn compile_let_star(
             ))
         }
     };
+
+    // Open the child scope before any bindings.
+    chunk.emit(Op::PushEnv);
 
     // Each pair: evaluate in the current (extended) env, then bind immediately.
     for b in bindings {
@@ -608,27 +659,37 @@ fn compile_let_star(
     let body = &list[2..];
     if body.is_empty() {
         chunk.emit(Op::LoadConst(Value::Nil));
+        chunk.emit(Op::PopEnv);
         return Ok(());
     }
     for expr in &body[..body.len() - 1] {
         compile_expr(expr, chunk, heap, env, false)?;
         chunk.emit(Op::Pop);
     }
-    compile_expr(body.last().unwrap(), chunk, heap, env, tail)
+    // Compile last body expr (not in full tail position — PopEnv follows).
+    compile_expr(body.last().unwrap(), chunk, heap, env, false)?;
+    chunk.emit(Op::PopEnv);
+    let _ = tail;
+    Ok(())
 }
 
 // ── lambda ────────────────────────────────────────────────────────────────────
 
 /// Compile `(lambda (params...) body...)` into a `MakeFunc` instruction.
 ///
-/// The body is compiled into a fresh sub-chunk.  The sub-chunk gets a
-/// terminal `Return` appended.  The sub-chunk index is recorded in
-/// `MakeFunc { code_offset, params }`.
+/// The body is compiled into a fresh sub-chunk stored in the parent chunk's
+/// `sub_chunks` vector.  A terminal `Op::Return` is appended automatically.
+///
+/// `self_name` — when `Some(name)`, a `StoreSelf(name)` is prepended to the
+/// sub-chunk body so the closure can look up its own name for direct recursion
+/// (as in `(define factorial (lambda (n) ...))`).  Pass `None` for anonymous
+/// lambdas.
 fn compile_lambda(
     list: &[Expr],
     chunk: &mut Chunk,
     heap: &mut Heap,
     env: crate::expr::Env,
+    self_name: Option<String>,
 ) -> Result<(), String> {
     if list.len() < 3 {
         return Err(format!(
@@ -641,8 +702,14 @@ fn compile_lambda(
 
     // Compile the body into a new sub-chunk.
     let mut body_chunk = Chunk::new();
-    let body_exprs = &list[2..];
 
+    // If this is a named lambda (from `define`), bind the closure to its own
+    // name at the very start of the sub-chunk so recursive calls resolve.
+    if let Some(ref name) = self_name {
+        body_chunk.emit(Op::StoreSelf(name.clone()));
+    }
+
+    let body_exprs = &list[2..];
     if body_exprs.is_empty() {
         body_chunk.emit(Op::LoadConst(Value::Nil));
     } else {
@@ -668,10 +735,18 @@ fn compile_lambda(
     let body_expr = if body_exprs.len() == 1 {
         body_exprs[0].clone()
     } else {
-        Expr::List(std::iter::once(Expr::Symbol("begin".into())).chain(body_exprs.iter().cloned()).collect())
+        Expr::List(
+            std::iter::once(Expr::Symbol("begin".into()))
+                .chain(body_exprs.iter().cloned())
+                .collect()
+        )
     };
 
-    chunk.emit(Op::MakeFunc { code_offset, params, body_expr: Box::new(body_expr) });
+    chunk.emit(Op::MakeFunc {
+        code_offset,
+        params,
+        body_expr: Box::new(body_expr),
+    });
     Ok(())
 }
 
@@ -740,6 +815,13 @@ fn has_unquote_or_splicing(expr: &Expr) -> bool {
 }
 
 /// Recursively check if the expression is compilable in the conservative VM scope.
+///
+/// Compilable forms: numbers, strings, symbols (as variable lookups), builtins,
+/// `if`, `begin`, `quote`, `define`, `let`, `let*`, `lambda` (whose body does
+/// not contain CubicalTerm / set! / letrec), and function calls.
+///
+/// Not compilable: `quasiquote` with runtime unquotes, `set!`, `letrec`,
+/// `CubicalTerm`, `Macro`, raw `Lambda` (tree-walker-produced).
 pub fn is_compilable(expr: &Expr) -> bool {
     if contains_cubical(expr) {
         return false;
@@ -748,37 +830,45 @@ pub fn is_compilable(expr: &Expr) -> bool {
         Expr::Number(_) => true,
         Expr::Str(_) => true,
         Expr::Symbol(s) => {
-            // stand-alone variable lookup is fine, unless it's a mutation/binding/unquote keyword
-            s != "define" && s != "let" && s != "let*" && s != "letrec" && s != "set!" && s != "lambda" && s != "unquote" && s != "unquote-splicing"
+            // Stand-alone variable lookup is fine unless it's a bare keyword
+            // that has no meaning outside a list form.
+            s != "letrec" && s != "unquote" && s != "unquote-splicing"
         }
         Expr::Func(_) => true,
+        // Raw tree-walker Lambda/Macro/CubicalTerm are not compilable.
         Expr::Lambda(..) | Expr::Macro(..) | Expr::CubicalTerm(_) => false,
         Expr::List(items) => {
             if items.is_empty() {
                 return true; // nil
             }
-            // Check if the list represents a forbidden special form
             if let Expr::Symbol(s) = &items[0] {
                 match s.as_str() {
-                    "define" | "let" | "let*" | "letrec" | "set!" | "lambda" | "unquote" | "unquote-splicing" => return false,
+                    // Still not compilable.
+                    "letrec" | "unquote" | "unquote-splicing" => return false,
+                    // set! is blocked (VM does not yet implement mutation walk).
+                    "set!" => return false,
+                    // lambda is compilable if the body contains no CubicalTerm,
+                    // set!, or letrec anywhere in its subtree.
+                    "lambda" => {
+                        return items.iter().all(is_compilable);
+                    }
+                    // define, let, let* — already compilable; recurse.
+                    "define" | "let" | "let*" => {
+                        return items.iter().all(is_compilable);
+                    }
                     "quasiquote" => {
                         if items.len() != 2 || has_unquote_or_splicing(&items[1]) {
                             return false;
                         }
-                        // Quasiquote datum doesn't need compiler code-check, just contains_cubical (already checked above)
                         return true;
                     }
                     "quote" => {
-                        if items.len() != 2 {
-                            return false;
-                        }
-                        // Quote datum doesn't need compiler code-check, just contains_cubical (already checked above)
-                        return true;
+                        return items.len() == 2;
                     }
                     _ => {}
                 }
             }
-            // For standard lists and function calls, all elements must be compilable recursively
+            // Generic list / function call: all elements must be compilable.
             items.iter().all(is_compilable)
         }
     }

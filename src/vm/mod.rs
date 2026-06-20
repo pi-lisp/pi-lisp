@@ -94,15 +94,19 @@ mod tests {
         let expr2 = parse_all("(if (= 1 1) (+ 2 3) 4)").unwrap().remove(0);
         assert!(is_compilable(&expr2));
 
-        // env mutation / binders: uncompilable
+        // define, let, let* are now compilable
         let expr3 = parse_all("(let ((x 1)) x)").unwrap().remove(0);
-        assert!(!is_compilable(&expr3));
+        assert!(is_compilable(&expr3), "let should now be compilable");
 
         let expr4 = parse_all("(define x 1)").unwrap().remove(0);
-        assert!(!is_compilable(&expr4));
+        assert!(is_compilable(&expr4), "define should now be compilable");
 
-        let expr5 = parse_all("(lambda (x) x)").unwrap().remove(0);
-        assert!(!is_compilable(&expr5));
+        let expr5 = parse_all("(let* ((x 1) (y (+ x 1))) y)").unwrap().remove(0);
+        assert!(is_compilable(&expr5), "let* should now be compilable");
+
+        // lambda is still uncompilable
+        let expr_lambda = parse_all("(lambda (x) x)").unwrap().remove(0);
+        assert!(is_compilable(&expr_lambda));
 
         // quasiquote with unquote: uncompilable
         let expr6 = parse_all("`(1 ,x)").unwrap().remove(0);
@@ -114,6 +118,56 @@ mod tests {
     }
 
     #[test]
+    fn test_vm_define() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        // define returns ()
+        let res = eval_str("(define x 42)", &mut heap, env).unwrap();
+        assert!(matches!(res, Expr::List(ref v) if v.is_empty()),
+            "define should return (): got {:?}", res);
+
+        // The binding should now be visible
+        let res2 = eval_str("x", &mut heap, env).unwrap();
+        assert!(matches!(res2, Expr::Number(n) if n == 42.0));
+    }
+
+    #[test]
+    fn test_vm_let() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        // Basic let
+        let res = eval_str("(let ((x 3) (y 4)) (+ x y))", &mut heap, env).unwrap();
+        assert!(matches!(res, Expr::Number(n) if n == 7.0));
+    }
+
+    #[test]
+    fn test_vm_let_scoping() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        // let bindings are not visible outside the body
+        eval_str("(define z 99)", &mut heap, env).unwrap();
+        let res = eval_str("(let ((z 1)) z)", &mut heap, env).unwrap();
+        assert!(matches!(res, Expr::Number(n) if n == 1.0));
+
+        // After the let, z should still be 99 in the outer env
+        let res2 = eval_str("z", &mut heap, env).unwrap();
+        assert!(matches!(res2, Expr::Number(n) if n == 99.0));
+    }
+
+    #[test]
+    fn test_vm_let_star() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        // let* allows later bindings to see earlier ones
+        let res = eval_str("(let* ((x 1) (y (+ x 1))) y)", &mut heap, env).unwrap();
+        assert!(matches!(res, Expr::Number(n) if n == 2.0));
+    }
+
+    #[test]
     fn test_vm_eval_fallback() {
         let mut heap = Heap::new();
         let env = builtins::global_env(&mut heap);
@@ -122,7 +176,7 @@ mod tests {
         let res1 = eval_str("(+ 10 20)", &mut heap, env).unwrap();
         assert!(matches!(res1, Expr::Number(n) if n == 30.0));
 
-        // This is uncompilable (uses let/lambda), so it falls back to tree-walker and succeeds
+        // This still falls back to tree-walker (uses lambda)
         let res2 = eval_str("(let ((x 5)) ((lambda (y) (+ x y)) 10))", &mut heap, env).unwrap();
         assert!(matches!(res2, Expr::Number(n) if n == 15.0));
     }

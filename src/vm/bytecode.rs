@@ -209,6 +209,24 @@ pub enum Op {
     /// Discard the top of the stack (used to throw away the value of a
     /// non-tail expression in a `begin` sequence or a `define` side-effect).
     Pop,
+
+    /// Push a new child environment frame onto the environment stack.
+    /// The new frame's parent is the current frame.  After this instruction
+    /// the VM's current `env` is the newly allocated child.
+    PushEnv,
+
+    /// Restore the parent of the current environment frame as the VM's
+    /// current `env`.  Used to exit the scope created by `let` / `let*`.
+    PopEnv,
+
+    /// Bind the currently-executing closure to `name` in the current
+    /// environment frame.  Emitted at the top of a named lambda's sub-chunk
+    /// (produced by `(define name (lambda ...))`) so that recursive calls
+    /// inside the body can resolve `name`.
+    ///
+    /// The VM implements this by re-wrapping the current frame's `chunk` +
+    /// `params` into a fresh `VmValue::Closure` and storing it under `name`.
+    StoreSelf(String),
 }
 
 // ── Chunk ────────────────────────────────────────────────────────────────────

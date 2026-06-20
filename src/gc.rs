@@ -382,6 +382,13 @@ impl Heap {
 
     // ── diagnostics ──────────────────────────────────────────────────────────
 
+    /// Return the parent handle of the environment at `handle`, or `None`
+    /// if it is a root frame.  Used by the VM's `PopEnv` instruction to
+    /// restore the enclosing scope after a `let` / `let*` body completes.
+    pub fn parent_of(&self, handle: GcHandle) -> Option<GcHandle> {
+        self.get(handle).parent
+    }
+
     /// Total number of slots ever allocated (including free slots).
     pub fn capacity(&self) -> usize {
         self.data.len()

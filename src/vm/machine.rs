@@ -222,6 +222,10 @@ pub struct CallFrame {
     stack_base: usize,
     /// The environment frame for variable lookup and binding.
     env: GcHandle,
+    /// Parameter names of the closure executing in this frame.
+    /// Empty for the top-level chunk (which is not a closure call).
+    /// Used by `Op::StoreSelf` to reconstruct the closure value.
+    params: Vec<String>,
 }
 
 // ── VM ───────────────────────────────────────────────────────────────────────
@@ -249,6 +253,7 @@ impl<'h> VM<'h> {
             ip: 0,
             stack_base: 0,
             env,
+            params: Vec::new(), // top-level chunk is not a closure
         };
         VM {
             stack: Vec::new(),
@@ -302,8 +307,9 @@ impl<'h> VM<'h> {
                     let env = self.frames[frame_idx].env;
                     let expr = self.vm_value_to_expr_inner(val)?;
                     env_set(self.heap, env, name, expr);
-                    // Leave a Nil on the stack so the caller always has a value.
-                    self.stack.push(VmValue::Nil);
+                    // StoreVar is a pure side-effect: it does NOT push a value.
+                    // Callers that need a return value (e.g. `define`) emit an
+                    // explicit LoadConst(Nil) afterwards.
                 }
 
                 // ── Pop ──────────────────────────────────────────────────────
@@ -365,6 +371,38 @@ impl<'h> VM<'h> {
                         .ok_or("VM MakeList: stack underflow")?;
                     let items: Vec<VmValue> = self.stack.drain(start..).collect();
                     self.stack.push(VmValue::List(items));
+                }
+
+                // ── PushEnv ──────────────────────────────────────────────────
+                Op::PushEnv => {
+                    let parent = self.frames[frame_idx].env;
+                    let child = new_env(self.heap, Some(parent));
+                    self.frames[frame_idx].env = child;
+                }
+
+                // ── PopEnv ───────────────────────────────────────────────────
+                Op::PopEnv => {
+                    let current = self.frames[frame_idx].env;
+                    // Retrieve the parent handle stored by new_env.
+                    let parent = self.heap.parent_of(current)
+                        .ok_or_else(|| "VM PopEnv: no parent environment (already at root)".to_string())?;
+                    self.frames[frame_idx].env = parent;
+                }
+
+                // ── StoreSelf ───────────────────────────────────────────────
+                Op::StoreSelf(name) => {
+                    // Reconstruct the closure value from the current frame's
+                    // chunk and params, capturing the current env.
+                    let frame = &self.frames[frame_idx];
+                    let self_val = VmValue::Closure {
+                        chunk: Rc::clone(&frame.chunk),
+                        params: frame.params.clone(),
+                        body_expr: Box::new(crate::expr::Expr::List(vec![])),
+                        env: frame.env,
+                    };
+                    let expr = self.vm_value_to_expr_inner(self_val)?;
+                    let env = self.frames[frame_idx].env;
+                    env_set(self.heap, env, name, expr);
                 }
 
                 // ── Call ─────────────────────────────────────────────────────
@@ -482,6 +520,7 @@ impl<'h> VM<'h> {
                     frame.chunk = chunk;
                     frame.ip = 0;
                     frame.env = call_env;
+                    frame.params = params;
                     // stack_base stays as-is — the frame's stack window begins
                     // where it always did; args are now bound in the env.
                 } else {
@@ -492,6 +531,7 @@ impl<'h> VM<'h> {
                         ip: 0,
                         stack_base,
                         env: call_env,
+                        params,
                     });
                 }
 

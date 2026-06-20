@@ -895,7 +895,7 @@ fn is_compilable_rec(expr: &Expr, qq_depth: usize) -> bool {
         Expr::Str(_) => true,
         Expr::Symbol(s) => {
             if qq_depth == 0 {
-                s != "letrec" && s != "unquote" && s != "unquote-splicing"
+                s != "unquote" && s != "unquote-splicing"
             } else {
                 true
             }
@@ -953,14 +953,14 @@ fn is_compilable_rec(expr: &Expr, qq_depth: usize) -> bool {
                 // Outside quasiquote (qq_depth == 0)
                 if let Expr::Symbol(s) = &items[0] {
                     match s.as_str() {
-                        "letrec" | "unquote" | "unquote-splicing" => return false,
+                        "unquote" | "unquote-splicing" => return false,
                         // defmacro produces Expr::Macro, which the VM cannot
                         // construct — always fall back to the tree-walker.
-                        "defmacro" | "set!" => return false,
+                        "defmacro" => return false,
                         "lambda" => {
                             return items.iter().all(|e| is_compilable_rec(e, 0));
                         }
-                        "define" | "let" | "let*" => {
+                        "define" | "let" => {
                             return items.iter().all(|e| is_compilable_rec(e, 0));
                         }
                         "quasiquote" => {

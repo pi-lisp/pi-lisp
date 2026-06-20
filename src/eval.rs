@@ -280,7 +280,6 @@ fn eval_define(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Expr, String>
     }
     if let Expr::Symbol(name) = &list[1] {
         let val = eval(&list[2], env, heap)?;
-        println!("[DEBUG] env_set: {} in env {:?}", name, env);
         env_set(heap, env, name.clone(), val.clone());
         Ok(val)
     } else {

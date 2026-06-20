@@ -489,3 +489,14 @@ Tests definitional equality of two closed cubical terms.
 ```
 
 Returns `1.0` if `t` and `u` are definitionally equal, `0.0` otherwise.
+
+---
+
+### `load-ctt`
+load ctt file and run and return result
+
+```
+(load-ctt filename) → (Str,CubicalTerm,CubicalTerm)
+```
+
+filename type is Str 

@@ -30,6 +30,8 @@
 //! offset `0` and then back-patches it once the target instruction is known
 //! (see `compiler.rs`).
 
+use std::rc::Rc;
+use crate::gc::{Heap, GcHandle};
 use crate::expr::Expr;
 
 // ── Value ─────────────────────────────────────────────────────────────────────
@@ -43,7 +45,7 @@ use crate::expr::Expr;
 ///
 /// `CubicalTerm` is deliberately absent: the compiler rejects any expression
 /// containing one before producing a `Value`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub enum Value {
     /// A floating-point number (same as `Expr::Number`).
     Number(f64),
@@ -57,6 +59,47 @@ pub enum Value {
     /// The empty list `()` — distinct from `List(vec![])` only for clarity;
     /// the two are semantically equivalent.
     Nil,
+    /// A built-in function pointer.
+    Builtin(Rc<dyn Fn(&[Expr], &mut Heap) -> Result<Expr, String>>),
+    /// A closure.
+    Closure {
+        params: Vec<String>,
+        body_chunk: Rc<Chunk>,
+        body_expr: Box<Expr>,
+        env: GcHandle,
+    },
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Number(n) => write!(f, "Number({})", n),
+            Value::Str(s) => write!(f, "Str({:?})", s),
+            Value::Symbol(s) => write!(f, "Symbol({})", s),
+            Value::List(items) => write!(f, "List({:?})", items),
+            Value::Nil => write!(f, "Nil"),
+            Value::Builtin(_) => write!(f, "Builtin(<builtin>)"),
+            Value::Closure { params, .. } => write!(f, "Closure(<closure({})>)", params.join(", ")),
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Symbol(a), Value::Symbol(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
+            (Value::Nil, Value::Nil) => true,
+            (Value::Builtin(a), Value::Builtin(b)) => Rc::ptr_eq(a, b),
+            (Value::Closure { params: p1, env: e1, body_chunk: c1, .. },
+             Value::Closure { params: p2, env: e2, body_chunk: c2, .. }) => {
+                p1 == p2 && e1 == e2 && Rc::ptr_eq(c1, c2)
+            }
+            _ => false,
+        }
+    }
 }
 
 // ── Expr ↔ Value conversion ───────────────────────────────────────────────────
@@ -75,8 +118,18 @@ pub fn expr_to_value(expr: &Expr) -> Result<Value, String> {
             let vs: Result<Vec<Value>, String> = items.iter().map(expr_to_value).collect();
             Ok(Value::List(vs?))
         }
-        Expr::Func(_) => Err("cannot convert built-in function to Value".into()),
-        Expr::Lambda(..) => Err("cannot convert lambda to Value (use MakeFunc)".into()),
+        Expr::Func(f) => Ok(Value::Builtin(Rc::clone(f))),
+        Expr::Lambda(params, body, env) => {
+            let mut body_chunk = Chunk::new();
+            body_chunk.emit(Op::LoadConst(Value::Nil));
+            body_chunk.emit(Op::Return);
+            Ok(Value::Closure {
+                params: params.clone(),
+                body_chunk: Rc::new(body_chunk),
+                body_expr: body.clone(),
+                env: *env,
+            })
+        }
         Expr::Macro(..) => Err("cannot convert macro to Value".into()),
         Expr::CubicalTerm(_) => Err("uncompilable: CubicalTerm".into()),
     }
@@ -92,6 +145,8 @@ pub fn value_to_expr(val: Value) -> Expr {
         Value::Symbol(s) => Expr::Symbol(s),
         Value::List(items) => Expr::List(items.into_iter().map(value_to_expr).collect()),
         Value::Nil => Expr::List(vec![]),
+        Value::Builtin(f) => Expr::Func(f),
+        Value::Closure { params, body_expr, env, .. } => Expr::Lambda(params, body_expr, env),
     }
 }
 
@@ -134,6 +189,8 @@ pub enum Op {
         code_offset: usize,
         /// The formal parameter names the closure expects.
         params: Vec<String>,
+        /// The original expression body of the lambda.
+        body_expr: Box<Expr>,
     },
 
     /// Call the function on top of the stack with `n` arguments (which are

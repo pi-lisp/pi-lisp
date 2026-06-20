@@ -79,24 +79,10 @@ impl Compiler {
     ///
     /// Returns `Err` if the expression is or contains `CubicalTerm`, or if
     /// any syntactic constraint is violated.
-    pub fn compile(expr: &Expr, heap: &mut Heap) -> Result<Chunk, String> {
-        // Allocate a temporary, empty environment frame for macro expansion.
-        // We do NOT look up ordinary variables in it; it is used only as the
-        // root env passed to `expand_all` so that macro definitions stored in
-        // the real global env are reachable via `env_get`.
-        //
-        // NOTE: For a production compiler this would be the actual global env.
-        // For phase 1 we use a fresh empty frame; the main trade-off is that
-        // macros defined in the running program won't be visible to this
-        // compiler unless the caller arranges to pass the real env through.
-        // Passing `heap` gives access to any env frame the caller already has,
-        // but the compiler API only takes `&mut Heap`, not a specific `GcHandle`.
-        // A future revision can add an `env: GcHandle` parameter.
-        let temp_env = new_env(heap, None);
-
-        let expanded = expand_all(expr, temp_env, heap)?;
+    pub fn compile(expr: &Expr, env: crate::expr::Env, heap: &mut Heap) -> Result<Chunk, String> {
+        let expanded = expand_all(expr, env, heap)?;
         let mut chunk = Chunk::new();
-        compile_expr(&expanded, &mut chunk, heap, temp_env, /*tail=*/ true)?;
+        compile_expr(&expanded, &mut chunk, heap, env, /*tail=*/ true)?;
         // Every top-level chunk needs a terminal Return so the VM knows to stop.
         chunk.emit(Op::Return);
         Ok(chunk)
@@ -679,7 +665,13 @@ fn compile_lambda(
     // Register the sub-chunk in the parent chunk and record its index.
     let code_offset = chunk.add_sub_chunk(body_chunk);
 
-    chunk.emit(Op::MakeFunc { code_offset, params });
+    let body_expr = if body_exprs.len() == 1 {
+        body_exprs[0].clone()
+    } else {
+        Expr::List(std::iter::once(Expr::Symbol("begin".into())).chain(body_exprs.iter().cloned()).collect())
+    };
+
+    chunk.emit(Op::MakeFunc { code_offset, params, body_expr: Box::new(body_expr) });
     Ok(())
 }
 
@@ -733,5 +725,61 @@ fn contains_cubical(expr: &Expr) -> bool {
         Expr::Lambda(_, body, _) => contains_cubical(body),
         Expr::Macro(_, body) => contains_cubical(body),
         _ => false,
+    }
+}
+
+/// Returns `true` if `expr` contains an `unquote` or `unquote-splicing` symbol anywhere.
+fn has_unquote_or_splicing(expr: &Expr) -> bool {
+    match expr {
+        Expr::Symbol(s) => s == "unquote" || s == "unquote-splicing",
+        Expr::List(items) => items.iter().any(has_unquote_or_splicing),
+        Expr::Lambda(_, body, _) => has_unquote_or_splicing(body),
+        Expr::Macro(_, body) => has_unquote_or_splicing(body),
+        _ => false,
+    }
+}
+
+/// Recursively check if the expression is compilable in the conservative VM scope.
+pub fn is_compilable(expr: &Expr) -> bool {
+    if contains_cubical(expr) {
+        return false;
+    }
+    match expr {
+        Expr::Number(_) => true,
+        Expr::Str(_) => true,
+        Expr::Symbol(s) => {
+            // stand-alone variable lookup is fine, unless it's a mutation/binding/unquote keyword
+            s != "define" && s != "let" && s != "let*" && s != "letrec" && s != "set!" && s != "lambda" && s != "unquote" && s != "unquote-splicing"
+        }
+        Expr::Func(_) => true,
+        Expr::Lambda(..) | Expr::Macro(..) | Expr::CubicalTerm(_) => false,
+        Expr::List(items) => {
+            if items.is_empty() {
+                return true; // nil
+            }
+            // Check if the list represents a forbidden special form
+            if let Expr::Symbol(s) = &items[0] {
+                match s.as_str() {
+                    "define" | "let" | "let*" | "letrec" | "set!" | "lambda" | "unquote" | "unquote-splicing" => return false,
+                    "quasiquote" => {
+                        if items.len() != 2 || has_unquote_or_splicing(&items[1]) {
+                            return false;
+                        }
+                        // Quasiquote datum doesn't need compiler code-check, just contains_cubical (already checked above)
+                        return true;
+                    }
+                    "quote" => {
+                        if items.len() != 2 {
+                            return false;
+                        }
+                        // Quote datum doesn't need compiler code-check, just contains_cubical (already checked above)
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            // For standard lists and function calls, all elements must be compilable recursively
+            items.iter().all(is_compilable)
+        }
     }
 }

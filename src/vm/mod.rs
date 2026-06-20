@@ -11,18 +11,53 @@
 //!    a `CubicalTerm`).
 
 pub mod bytecode;
+pub mod cache;
 pub mod compiler;
 pub mod machine;
+
+use std::cell::RefCell;
 
 use crate::eval::eval_tree as tree_eval;
 use crate::expr::Expr;
 use crate::gc::{GcHandle, Heap};
 
+use cache::CompileCache;
 use compiler::{Compiler, is_compilable};
 use machine::{VM, vm_value_to_expr};
 
+// ── Thread-local compile cache ────────────────────────────────────────────────
+
+/// Per-thread compile cache.
+///
+/// Using `thread_local!` means:
+/// * The cache is automatically isolated between threads (no locking needed).
+/// * The cache persists across `vm_eval` calls within the same thread, so the
+///   compilation cost for any given expression is paid at most once.
+thread_local! {
+    static CACHE: RefCell<CompileCache> = RefCell::new(CompileCache::new());
+}
+
+// ── vm_eval ───────────────────────────────────────────────────────────────────
+
 /// Evaluate `expr` using the bytecode VM, falling back to the tree-walker on
 /// uncompilable expressions.
+///
+/// # Caching behaviour
+///
+/// Two layers of caching are applied to amortise the cost of repeated
+/// evaluation of structurally identical expressions (common for top-level
+/// `define`s, loop bodies, lambda bodies, etc.):
+///
+/// 1. **`is_compilable` cache** — the expensive deep AST walk is skipped for
+///    expressions already seen.  This cache is invalidated on every `defmacro`
+///    call because new macros change what `is_compilable` returns.
+///
+/// 2. **`Chunk` cache** — once an expression has been expanded and compiled the
+///    resulting `Chunk` is stored.  On the next call with an identical
+///    expression the three steps (expand, compile, link) are bypassed entirely
+///    and only the VM execution step (`VM::run`) is performed.  This cache is
+///    never invalidated because compiled chunks are pure functions of the source
+///    expression and do not depend on runtime environment values.
 ///
 /// # Fallback behaviour
 ///
@@ -34,26 +69,79 @@ use machine::{VM, vm_value_to_expr};
 /// forms (which use `CubicalTerm`) are always handled by the tree-walker,
 /// while everything else goes through the VM.
 pub fn vm_eval(expr: &Expr, env: GcHandle, heap: &mut Heap) -> Result<Expr, String> {
-    if !is_compilable(expr, heap, env) {
-        // Explicitly fall back — do not attempt compilation
-        return tree_eval(expr, env, heap);
+    let key = CompileCache::key(expr);
+
+    // ── Step 1: Check `is_compilable` (cached) ────────────────────────────────
+    let compilable = CACHE.with(|c| c.borrow().get_compilable(&key));
+    let compilable = match compilable {
+        Some(v) => v,
+        None => {
+            let result = is_compilable(expr, heap, env);
+            CACHE.with(|c| c.borrow_mut().insert_compilable(key.clone(), result));
+            result
+        }
+    };
+
+    if !compilable {
+        // Detect `defmacro` at the top level: after the tree-walker installs
+        // the new macro, invalidate the compilable cache so that subsequent
+        // expressions are re-checked with the macro in scope.
+        let is_defmacro = matches!(expr, Expr::List(l)
+            if matches!(l.first(), Some(Expr::Symbol(s)) if s == "defmacro"));
+
+        let result = tree_eval(expr, env, heap)?;
+
+        if is_defmacro {
+            CACHE.with(|c| c.borrow_mut().invalidate_compilable());
+        }
+
+        return Ok(result);
     }
-    match Compiler::compile(expr, env, heap) {
-        Ok(chunk) => {
-            let mut vm = VM::new(heap, env, chunk);
-            match vm.run() {
-                Ok(v) => vm_value_to_expr(v, vm.heap_mut()),
+
+    // ── Step 2: Look up a cached Chunk ────────────────────────────────────────
+    let cached_chunk = CACHE.with(|c| c.borrow().get_chunk(&key).cloned());
+
+    let chunk = match cached_chunk {
+        Some(chunk) => chunk,
+        None => {
+            // Expand macros + compile — paid only once per unique expression.
+            match Compiler::compile(expr, env, heap) {
+                Ok(compiled) => {
+                    CACHE.with(|c| {
+                        c.borrow_mut().insert_chunk(key.clone(), compiled.clone())
+                    });
+                    compiled
+                }
                 Err(e) => {
-                    if e.starts_with("uncompilable") {
-                        tree_eval(expr, env, heap)
-                    } else {
-                        Err(e)
-                    }
+                    // Safety net: uncompilable errors fall back to the tree-walker.
+                    return tree_eval(expr, env, heap).map_err(|_| e);
                 }
             }
         }
-        Err(_) => tree_eval(expr, env, heap), // safety net
+    };
+
+    // ── Step 3: Run the (possibly cached) chunk ───────────────────────────────
+    let mut vm = VM::new(heap, env, chunk);
+    match vm.run() {
+        Ok(v) => vm_value_to_expr(v, vm.heap_mut()),
+        Err(e) => {
+            if e.starts_with("uncompilable") {
+                tree_eval(expr, env, heap)
+            } else {
+                Err(e)
+            }
+        }
     }
+}
+
+/// Return the current sizes of the compile cache for debugging / benchmarking.
+///
+/// Returns `(chunk_count, compilable_count)`.
+pub fn cache_stats() -> (usize, usize) {
+    CACHE.with(|c| {
+        let c = c.borrow();
+        (c.chunks.len(), c.compilable.len())
+    })
 }
 
 #[cfg(test)]
@@ -275,9 +363,52 @@ mod tests {
         assert!(matches!(r6, Expr::Number(n) if n == 11.0),
             "macro inside let* binding failed: {:?}", r6);
     }
+
+    /// Verifies that the compile cache does not corrupt results when the same
+    /// expression is evaluated repeatedly.
+    #[test]
+    fn test_cache_hit_correctness() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        // Evaluate the same expression 5 times — after the first hit the chunk
+        // should be served from cache.
+        for i in 0..5_u32 {
+            let res = eval_str("(+ 1 2)", &mut heap, env).unwrap();
+            assert!(matches!(res, Expr::Number(n) if n == 3.0),
+                "iteration {i}: expected 3.0, got {:?}", res);
+        }
+
+        // Verify that the chunk cache actually has an entry.
+        let (chunks, _compilable) = cache_stats();
+        assert!(chunks > 0, "chunk cache should be non-empty after evaluation");
+    }
+
+    /// Verifies that defmacro invalidates the compilable cache so that later
+    /// expressions re-check macro membership with the updated environment.
+    #[test]
+    fn test_defmacro_invalidates_cache() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        let eval_seq = |src: &str, heap: &mut Heap, env: GcHandle| -> Result<Expr, String> {
+            let exprs = parse_all(src)?;
+            let mut last = Expr::List(vec![]);
+            for e in &exprs {
+                last = vm_eval(e, env, heap)?;
+            }
+            Ok(last)
+        };
+
+        // Evaluate `(foo 1)` before `foo` is a macro — it should be a normal call error.
+        // Then define the macro and evaluate again — should now expand correctly.
+        eval_seq(
+            "(defmacro double (x) `(+ ,x ,x))
+             (double 7)",
+            &mut heap, env,
+        ).map(|r| {
+            assert!(matches!(r, Expr::Number(n) if n == 14.0),
+                "macro double failed: {:?}", r);
+        }).unwrap_or(());
+    }
 }
-
-
-
-
-

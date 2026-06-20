@@ -1,0 +1,37 @@
+; bench.uwu — VM compile-cache benchmark
+; Pure arithmetic forms that the VM can execute entirely without falling back
+; to the tree-walker. The same chunks are compiled once and reused.
+
+; These top-level defines are each compiled once; subsequent identical
+; expressions would be served from the chunk cache.
+(define a (+ 1 2))
+(define b (* 3 4))
+(define c (- 100 37))
+(define d (+ a (* b c)))
+
+; Repeated identical expressions — the second and later calls hit the chunk cache.
+(define x1 (+ (* 2 3) (- 10 4)))
+(define x2 (+ (* 2 3) (- 10 4)))
+(define x3 (+ (* 2 3) (- 10 4)))
+(define x4 (+ (* 2 3) (- 10 4)))
+(define x5 (+ (* 2 3) (- 10 4)))
+
+; A few let forms
+(define r1 (let ((p 7) (q 8)) (+ (* p p) (* q q))))
+(define r2 (let ((p 7) (q 8)) (+ (* p p) (* q q))))
+(define r3 (let ((p 7) (q 8)) (+ (* p p) (* q q))))
+
+; let* forms
+(define s1 (let* ((x 3) (y (* x 2)) (z (+ x y))) z))
+(define s2 (let* ((x 3) (y (* x 2)) (z (+ x y))) z))
+(define s3 (let* ((x 3) (y (* x 2)) (z (+ x y))) z))
+
+; if forms
+(define t1 (if (> 5 3) (+ 1 1) (- 1 1)))
+(define t2 (if (> 5 3) (+ 1 1) (- 1 1)))
+(define t3 (if (> 5 3) (+ 1 1) (- 1 1)))
+
+; Quasiquote (compilable in VM)
+(define q1 `(a b c))
+(define q2 `(a b c))
+(define q3 `(a b c))

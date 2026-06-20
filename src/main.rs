@@ -123,6 +123,16 @@ fn main() {
             };
             let base = Path::new(file_path).parent();
             with_import_base(base, || run(&src, global_env, &mut heap));
+
+            // Print compile-cache statistics when the VM feature is active.
+            #[cfg(feature = "vm")]
+            {
+                let (chunks, compilable) = crate::vm::cache_stats();
+                eprintln!(
+                    "[cache] chunks={} compilable={}",
+                    chunks, compilable
+                );
+            }
         }
     }
 }

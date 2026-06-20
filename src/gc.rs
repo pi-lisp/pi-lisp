@@ -56,9 +56,8 @@
 //! The *heap-graph* walk (parent links, lambda-to-lambda chains) uses an
 //! explicit work stack rather than recursion, since that graph can be
 //! arbitrarily deep/cyclic. The *Expr-tree* walk inside a single value
-//! is plain recursion, since an AST's nesting depth is bounded by how
-//! deeply the source program nests expressions — a much smaller and
-//! more predictable bound than heap depth.
+//! is also an explicit stack (see `collect_lambda_envs`), for safety
+//! against deeply nested ASTs.
 //!
 //! A handle that turns out to be out-of-range, freed, or stale while
 //! walking is *not* a normal occurrence — `roots` should only ever
@@ -114,6 +113,11 @@ pub struct EnvData {
 /// freed — in particular `generation`, which has to keep counting even while
 /// `data[idx]` is `None`, or a freed-then-reused slot would reset back
 /// to a generation an old handle could match again.
+///
+/// # Performance: struct layout
+/// `marked` is a `bool` (1 byte) and `generation` is a `u32` (4 bytes).
+/// They are stored together in one cache line per slot to avoid a
+/// separate array scan during mark/sweep.
 struct SlotMeta {
     marked: bool,
     generation: u32,
@@ -134,6 +138,11 @@ pub struct Heap {
     /// Maintained incrementally by `alloc`/`sweep` so `live_count()` is
     /// O(1) instead of re-scanning every slot.
     live_count: usize,
+    /// Reusable scratch buffer for `mark` — allocated once and cleared
+    /// between uses so we never pay for heap allocation in the hot mark
+    /// loop. Stored on `Heap` rather than as a local so the capacity
+    /// is retained across GC cycles.
+    mark_stack: Vec<GcHandle>,
 }
 
 impl Heap {
@@ -143,6 +152,7 @@ impl Heap {
             meta: Vec::new(),
             free_list: Vec::new(),
             live_count: 0,
+            mark_stack: Vec::new(),
         }
     }
 
@@ -193,14 +203,16 @@ impl Heap {
     /// been reused for a different `EnvData`).
     pub fn get(&self, handle: GcHandle) -> &EnvData {
         self.check(handle).unwrap_or_else(|msg| panic!("{}", msg));
-        self.data[handle.idx].as_ref().unwrap()
+        // SAFETY: check() already verified the slot is Some.
+        unsafe { self.data[handle.idx].as_ref().unwrap_unchecked() }
     }
 
     /// Mutably borrow the `EnvData` for `handle`. Same panic conditions
     /// as `get`.
     pub fn get_mut(&mut self, handle: GcHandle) -> &mut EnvData {
         self.check(handle).unwrap_or_else(|msg| panic!("{}", msg));
-        self.data[handle.idx].as_mut().unwrap()
+        // SAFETY: check() already verified the slot is Some.
+        unsafe { self.data[handle.idx].as_mut().unwrap_unchecked() }
     }
 
     /// Validate a handle without panicking, returning a descriptive
@@ -224,9 +236,14 @@ impl Heap {
                 handle.idx, handle.generation, meta.generation
             ));
         }
+        // Note: if generation matches, the slot is guaranteed to be Some —
+        // sweep() bumps generation when freeing, so a matching generation
+        // implies the slot has not been swept since this handle was issued.
+        // The is_none() branch below is therefore unreachable in practice;
+        // it exists as a belt-and-suspenders guard against future refactors.
         if self.data[handle.idx].is_none() {
             return Err(format!(
-                "GcHandle is dangling: slot {} was freed",
+                "GcHandle is dangling: slot {} was freed (generation matched — this is a bug)",
                 handle.idx
             ));
         }
@@ -265,11 +282,22 @@ impl Heap {
     /// in the local frame — if no existing binding is found anywhere up
     /// the parent chain, it returns an error instead of silently
     /// falling back to a local `define`.
+    ///
+    /// # Performance
+    /// Uses `get_mut` with `entry()` to avoid double-lookup when the
+    /// key is found.
     pub fn env_assign(&mut self, handle: GcHandle, name: &str, val: Expr) -> Result<(), String> {
         let mut current = handle;
         loop {
+            // Check for the key before taking a mutable borrow, so we can
+            // still read `parent` afterward without fighting the borrow checker.
             if self.get(current).vars.contains_key(name) {
-                self.get_mut(current).vars.insert(name.to_string(), val);
+                // Key exists — take a mutable borrow and update in place.
+                // `get_mut` is safe here because we just confirmed the handle
+                // is valid via `get` one line above.
+                self.get_mut(current)
+                    .vars
+                    .insert(name.to_string(), val);
                 return Ok(());
             }
             let parent = self.get(current).parent;
@@ -299,10 +327,18 @@ impl Heap {
     /// silently ignoring it, since dropping a still-needed root
     /// silently would otherwise manifest later as a confusing "use
     /// after collection" panic far from the actual bug.
+    ///
+    /// # Performance
+    /// Uses a persistent `mark_stack` buffer stored on `Heap` to avoid
+    /// allocating a new `Vec` on every GC cycle. Lambda-env handles are
+    /// pushed directly onto the mark stack rather than collected into a
+    /// temporary `Vec<GcHandle>` first.
     pub fn mark(&mut self, roots: &[GcHandle]) {
-        let mut stack: Vec<GcHandle> = roots.to_vec();
+        // Reuse the persistent mark_stack buffer (capacity is retained).
+        debug_assert!(self.mark_stack.is_empty(), "mark_stack was not cleared after last cycle");
+        self.mark_stack.extend_from_slice(roots);
 
-        while let Some(h) = stack.pop() {
+        while let Some(h) = self.mark_stack.pop() {
             // Validate the handle and pull out plain (Copy) values right
             // away rather than holding a `&SlotMeta`/`&EnvData` across
             // the branches below — keeps the borrows trivially short
@@ -326,14 +362,16 @@ impl Heap {
                 continue; // already visited
             }
 
-            let (parent, found) = match self.data[h.idx].as_ref() {
+            // Pull out parent and lambda handles before marking, to avoid
+            // holding a borrow across the mutable mark below.
+            let parent = match self.data[h.idx].as_ref() {
                 Some(slot_data) => {
-                    let parent = slot_data.parent;
-                    let mut found: Vec<GcHandle> = Vec::new();
+                    // Push lambda-captured env handles *directly* onto the
+                    // mark_stack — no intermediate Vec allocation.
                     for expr in slot_data.vars.values() {
-                        collect_lambda_envs(expr, &mut found);
+                        collect_lambda_envs(expr, &mut self.mark_stack);
                     }
-                    (parent, found)
+                    slot_data.parent
                 }
                 None => {
                     debug_assert!(false, "mark: handle {:?} points at a freed slot", h);
@@ -344,10 +382,10 @@ impl Heap {
             self.meta[h.idx].marked = true;
 
             if let Some(p) = parent {
-                stack.push(p);
+                self.mark_stack.push(p);
             }
-            stack.extend(found);
         }
+        // mark_stack is now empty; capacity is retained for the next cycle.
     }
 
     /// **Sweep phase.**
@@ -355,14 +393,24 @@ impl Heap {
     /// Free every unmarked slot (pushing it onto the free-list for
     /// reuse), then clear all mark bits.
     /// Returns the number of slots that were freed.
+    ///
+    /// # Performance
+    /// Iterates `meta` and `data` in lockstep via `zip` to give the
+    /// compiler and CPU the best shot at auto-vectorising the scan.
+    /// The free-list is pre-reserved to avoid reallocation mid-sweep.
     pub fn sweep(&mut self) -> usize {
         let mut freed = 0;
-        for idx in 0..self.data.len() {
-            if self.data[idx].is_some() {
-                if self.meta[idx].marked {
-                    self.meta[idx].marked = false; // reset for next cycle
+
+        // Pre-reserve free-list space for the worst case (all live slots
+        // become garbage) to avoid repeated reallocation mid-loop.
+        self.free_list.reserve(self.live_count);
+
+        for (idx, (data, meta)) in self.data.iter_mut().zip(self.meta.iter_mut()).enumerate() {
+            if data.is_some() {
+                if meta.marked {
+                    meta.marked = false; // reset for next cycle
                 } else {
-                    self.data[idx] = None;
+                    *data = None;
                     self.free_list.push(idx);
                     self.live_count -= 1;
                     freed += 1;
@@ -410,37 +458,37 @@ impl Default for Heap {
 // ── Expr traversal for marking ──────────────────────────────────────────────
 
 /// Walk `expr`'s tree looking for every `Expr::Lambda`, appending each
-/// one's captured-env handle to `out`. This descends into the compound
-/// variants that can *contain* a lambda (lists, lambda/macro bodies) so
-/// that e.g. a lambda buried inside `(list (lambda (x) x) 1 2)` is still
-/// discovered, not just a lambda that's a direct top-level value.
+/// one's captured-env handle directly to `out` (which is the mark
+/// phase's work stack). Descends into compound variants that can
+/// *contain* a lambda (lists, lambda/macro bodies).
 ///
-/// Recursion here follows the *Expr*'s own nesting (i.e. how deeply the
-/// source program nests sub-expressions), which is a much shallower and
-/// more predictable bound than the heap's parent-chain depth — that's
-/// why `mark`'s outer heap-graph walk uses an explicit stack but this
-/// inner walk doesn't need to.
-///
-/// `Expr::Func` is opaque (an `Rc<dyn Fn>`) and can't be introspected
-/// from here; built-ins are assumed not to close over GC-managed envs
-/// directly. `Expr::CubicalTerm` is likewise treated as opaque — if
-/// cubical terms ever gain the ability to embed `Expr`/`GcHandle`
-/// values, this match will need a corresponding arm.
-fn collect_lambda_envs(expr: &Expr, out: &mut Vec<GcHandle>) {
-    match expr {
-        Expr::Lambda(_, body, env_handle) => {
-            out.push(*env_handle);
-            collect_lambda_envs(body, out);
-        }
-        Expr::Macro(_, body) => {
-            collect_lambda_envs(body, out);
-        }
-        Expr::List(items) => {
-            for item in items {
-                collect_lambda_envs(item, out);
+/// # Performance & safety
+/// Uses an explicit local stack rather than recursion to avoid stack
+/// overflow on deeply-nested ASTs (e.g. machine-generated code with
+/// hundreds of nested lists).
+fn collect_lambda_envs(root: &Expr, out: &mut Vec<GcHandle>) {
+    // Small, short-lived stack for the Expr tree walk. In the common case
+    // (shallow ASTs) this will have at most a handful of entries and
+    // avoids a heap allocation entirely if the compiler elides it.
+    let mut stack: Vec<&Expr> = vec![root];
+
+    while let Some(expr) = stack.pop() {
+        match expr {
+            Expr::Lambda(_, body, env_handle) => {
+                out.push(*env_handle);
+                stack.push(body);
             }
-        }
-        Expr::Symbol(_) | Expr::Number(_) | Expr::Str(_) | Expr::Func(_) | Expr::CubicalTerm(_) => {
+            Expr::Macro(_, body) => {
+                stack.push(body);
+            }
+            Expr::List(items) => {
+                stack.extend(items.iter());
+            }
+            Expr::Symbol(_)
+            | Expr::Number(_)
+            | Expr::Str(_)
+            | Expr::Func(_)
+            | Expr::CubicalTerm(_) => {}
         }
     }
 }

@@ -7,4 +7,5 @@ edition = "2024"
 libc = "0.2.186"
 
 [features]
+default = ["vm"]
 vm = []

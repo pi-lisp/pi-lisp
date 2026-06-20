@@ -57,6 +57,7 @@
 //! compilation.
 
 use crate::expr::{Expr, env_get};
+use crate::gc::GcHandle;
 use crate::gc::Heap;
 use crate::macros::expand_macro;
 use crate::reader::parse_params;
@@ -886,7 +887,7 @@ fn contains_cubical(expr: &Expr) -> bool {
     }
 }
 
-fn is_compilable_rec(expr: &Expr, qq_depth: usize) -> bool {
+fn is_compilable_rec(expr: &Expr, qq_depth: usize, heap: &Heap, env: GcHandle) -> bool {
     if contains_cubical(expr) {
         return false;
     }
@@ -907,23 +908,23 @@ fn is_compilable_rec(expr: &Expr, qq_depth: usize) -> bool {
                 return true;
             }
             if qq_depth > 0 {
-                // Inside quasiquote
+                // Inside quasiquote: unquoted positions escape back to normal code.
                 match qq_op_expr(expr) {
                     Some("unquote") => {
                         if items.len() != 2 {
                             return false;
                         }
                         if qq_depth == 1 {
-                            is_compilable_rec(&items[1], 0)
+                            is_compilable_rec(&items[1], 0, heap, env)
                         } else {
-                            is_compilable_rec(&items[1], qq_depth - 1)
+                            is_compilable_rec(&items[1], qq_depth - 1, heap, env)
                         }
                     }
                     Some("quasiquote") => {
                         if items.len() != 2 {
                             return false;
                         }
-                        is_compilable_rec(&items[1], qq_depth + 1)
+                        is_compilable_rec(&items[1], qq_depth + 1, heap, env)
                     }
                     _ => {
                         // General list in quasiquote
@@ -934,14 +935,14 @@ fn is_compilable_rec(expr: &Expr, qq_depth: usize) -> bool {
                                         return false;
                                     }
                                     let next_depth = if qq_depth == 1 { 0 } else { qq_depth - 1 };
-                                    if !is_compilable_rec(&inner[1], next_depth) {
+                                    if !is_compilable_rec(&inner[1], next_depth, heap, env) {
                                         return false;
                                     }
                                 } else {
                                     unreachable!();
                                 }
                             } else {
-                                if !is_compilable_rec(item, qq_depth) {
+                                if !is_compilable_rec(item, qq_depth, heap, env) {
                                     return false;
                                 }
                             }
@@ -958,31 +959,44 @@ fn is_compilable_rec(expr: &Expr, qq_depth: usize) -> bool {
                         // construct — always fall back to the tree-walker.
                         "defmacro" => return false,
                         "lambda" => {
-                            return items.iter().all(|e| is_compilable_rec(e, 0));
+                            return items.iter().all(|e| is_compilable_rec(e, 0, heap, env));
                         }
                         "define" | "let" => {
-                            return items.iter().all(|e| is_compilable_rec(e, 0));
+                            return items.iter().all(|e| is_compilable_rec(e, 0, heap, env));
                         }
                         "quasiquote" => {
                             if items.len() != 2 {
                                 return false;
                             }
-                            return is_compilable_rec(&items[1], 1);
+                            return is_compilable_rec(&items[1], 1, heap, env);
                         }
                         "quote" => {
                             return items.len() == 2;
                         }
-                        _ => {}
+                        _ => {
+                            // Key change: if the head symbol resolves to a macro
+                            // in the current environment, this expression is not
+                            // compilable by the VM — fall back to the tree-walker.
+                            if let Ok(Expr::Macro(..)) = env_get(heap, env, s) {
+                                return false;
+                            }
+                        }
                     }
                 }
-                items.iter().all(|e| is_compilable_rec(e, 0))
+                // Recurse into all sub-expressions.
+                items.iter().all(|e| is_compilable_rec(e, 0, heap, env))
             }
         }
     }
 }
 
 /// Recursively check if the expression is compilable in the conservative VM scope.
-pub fn is_compilable(expr: &Expr) -> bool {
-    is_compilable_rec(expr, 0)
+///
+/// `heap` and `env` are required so the deep walk can detect macro calls at
+/// any nesting depth — if any list node's head symbol resolves to
+/// `Expr::Macro` in the current env, the whole expression is not compilable
+/// and must be handed to the tree-walker.
+pub fn is_compilable(expr: &Expr, heap: &Heap, env: GcHandle) -> bool {
+    is_compilable_rec(expr, 0, heap, env)
 }
 

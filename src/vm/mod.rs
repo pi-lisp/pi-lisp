@@ -34,22 +34,7 @@ use machine::{VM, vm_value_to_expr};
 /// forms (which use `CubicalTerm`) are always handled by the tree-walker,
 /// while everything else goes through the VM.
 pub fn vm_eval(expr: &Expr, env: GcHandle, heap: &mut Heap) -> Result<Expr, String> {
-    // ── Macro-call fast-path ─────────────────────────────────────────────────
-    // If the expression is a list whose head is a symbol that resolves to a
-    // Macro in the current environment, hand it off to the tree-walker.  The
-    // tree-walker correctly expands the macro and re-evaluates the expanded
-    // form, whereas the VM compiler would evaluate the quasiquote template at
-    // compile time and return the expanded list as data.
-    if let Expr::List(items) = expr {
-        if let Some(Expr::Symbol(head)) = items.first() {
-            use crate::expr::env_get;
-            if let Ok(Expr::Macro(..)) = env_get(heap, env, head) {
-                return tree_eval(expr, env, heap);
-            }
-        }
-    }
-
-    if !is_compilable(expr) {
+    if !is_compilable(expr, heap, env) {
         // Explicitly fall back — do not attempt compilation
         return tree_eval(expr, env, heap);
     }
@@ -86,35 +71,41 @@ mod tests {
     #[test]
     fn test_is_compilable() {
         use crate::vm::compiler::is_compilable;
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
 
         // Simple arithmetic/comparisons: compilable
         let expr1 = parse_all("(+ 1 2)").unwrap().remove(0);
-        assert!(is_compilable(&expr1));
+        assert!(is_compilable(&expr1, &heap, env));
 
         let expr2 = parse_all("(if (= 1 1) (+ 2 3) 4)").unwrap().remove(0);
-        assert!(is_compilable(&expr2));
+        assert!(is_compilable(&expr2, &heap, env));
 
         // define, let, let* are now compilable
         let expr3 = parse_all("(let ((x 1)) x)").unwrap().remove(0);
-        assert!(is_compilable(&expr3), "let should now be compilable");
+        assert!(is_compilable(&expr3, &heap, env), "let should now be compilable");
 
         let expr4 = parse_all("(define x 1)").unwrap().remove(0);
-        assert!(is_compilable(&expr4), "define should now be compilable");
+        assert!(is_compilable(&expr4, &heap, env), "define should now be compilable");
 
         let expr5 = parse_all("(let* ((x 1) (y (+ x 1))) y)").unwrap().remove(0);
-        assert!(is_compilable(&expr5), "let* should now be compilable");
+        assert!(is_compilable(&expr5, &heap, env), "let* should now be compilable");
 
-        // lambda is still uncompilable
+        // lambda is compilable (compile_lambda handles it)
         let expr_lambda = parse_all("(lambda (x) x)").unwrap().remove(0);
-        assert!(is_compilable(&expr_lambda));
+        assert!(is_compilable(&expr_lambda, &heap, env));
 
         // quasiquote with unquote: compilable
         let expr6 = parse_all("`(1 ,x)").unwrap().remove(0);
-        assert!(is_compilable(&expr6));
+        assert!(is_compilable(&expr6, &heap, env));
 
         // quasiquote without unquote: compilable
         let expr7 = parse_all("`(1 2 3)").unwrap().remove(0);
-        assert!(is_compilable(&expr7));
+        assert!(is_compilable(&expr7, &heap, env));
+
+        // defmacro: never compilable (always tree-walker)
+        let expr_dm = parse_all("(defmacro foo (x) x)").unwrap().remove(0);
+        assert!(!is_compilable(&expr_dm, &heap, env), "defmacro must not be compilable");
     }
 
     #[test]
@@ -209,6 +200,80 @@ mod tests {
 
         let res4 = eval_str("(when (> 3 2) 77)", &mut heap, env).unwrap();
         assert!(matches!(res4, Expr::Number(n) if n == 77.0));
+    }
+
+    /// Verifies that macro calls work correctly in the hybrid VM+tree-walker
+    /// setup at every nesting depth and context.
+    #[test]
+    fn test_macro_correctness() {
+        let mut heap = Heap::new();
+        let env = builtins::global_env(&mut heap);
+
+        // Helper: evaluate a sequence of top-level forms, return last result.
+        let eval_seq = |src: &str, heap: &mut Heap, env: GcHandle| -> Result<Expr, String> {
+            let exprs = parse_all(src)?;
+            let mut last = Expr::List(vec![]);
+            for e in &exprs {
+                last = vm_eval(e, env, heap)?;
+            }
+            Ok(last)
+        };
+
+        // 1. defmacro returns ()
+        let dm_res = eval_seq("(defmacro my-when (condition body) `(if ,condition ,body ()))",
+            &mut heap, env).unwrap();
+        assert!(matches!(dm_res, Expr::List(ref v) if v.is_empty()),
+            "defmacro should return (): got {:?}", dm_res);
+
+        // 2. Basic top-level macro call
+        let r = eval_seq(
+            "(defmacro my-when2 (cond body) `(if ,cond ,body ()))
+             (my-when2 (> 3 2) 99)",
+            &mut heap, env).unwrap();
+        assert!(matches!(r, Expr::Number(n) if n == 99.0),
+            "top-level macro call failed: {:?}", r);
+
+        // 3. Macro call inside let body — this was the Problem 1 bug
+        let r2 = eval_seq(
+            "(defmacro my-if-pos (x body) `(if (> ,x 0) ,body ()))
+             (let ((v 5)) (my-if-pos v 42))",
+            &mut heap, env).unwrap();
+        assert!(matches!(r2, Expr::Number(n) if n == 42.0),
+            "macro inside let failed: {:?}", r2);
+
+        // 4. Macro call inside lambda body
+        let r3 = eval_seq(
+            "(defmacro my-double-check (x body) `(if (> ,x 0) ,body 0))
+             (define check-fn (lambda (n) (my-double-check n (* n 2))))
+             (check-fn 7)",
+            &mut heap, env).unwrap();
+        assert!(matches!(r3, Expr::Number(n) if n == 14.0),
+            "macro inside lambda failed: {:?}", r3);
+
+        // 5. Macro call as argument to a function
+        let r4 = eval_seq(
+            "(defmacro my-or (a b) `(if ,a ,a ,b))
+             (+ (my-or 0 3) (my-or 4 0))",
+            &mut heap, env).unwrap();
+        assert!(matches!(r4, Expr::Number(n) if n == 7.0),
+            "macro as function argument failed: {:?}", r4);
+
+        // 6. Nested macro calls
+        let r5 = eval_seq(
+            "(defmacro my-and2 (a b) `(if ,a ,b ()))
+             (defmacro my-when3 (cond body) `(if ,cond ,body ()))
+             (my-when3 (my-and2 1 1) 55)",
+            &mut heap, env).unwrap();
+        assert!(matches!(r5, Expr::Number(n) if n == 55.0),
+            "nested macro calls failed: {:?}", r5);
+
+        // 7. Macro inside let*, each binding can reference earlier ones
+        let r6 = eval_seq(
+            "(defmacro my-inc (x) `(+ ,x 1))
+             (let* ((a 10) (b (my-inc a))) b)",
+            &mut heap, env).unwrap();
+        assert!(matches!(r6, Expr::Number(n) if n == 11.0),
+            "macro inside let* binding failed: {:?}", r6);
     }
 }
 

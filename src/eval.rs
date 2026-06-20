@@ -189,6 +189,7 @@ fn eval_step(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Step, String> {
                     "import" => return Ok(Step::Value(eval_import(list, env, heap)?)),
                     "begin" => return eval_begin(list, env, heap),
                     "let" => return eval_let(list, env, heap),
+                    "let*" => return eval_let_star(list, env, heap),
 
                     // ── explicit tail-call form ────────────────────────────
                     //
@@ -320,8 +321,9 @@ fn eval_defmacro(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Expr, Strin
     if let Expr::Symbol(name) = &list[1] {
         let params = parse_params(&list[2])?;
         let mac = Expr::Macro(params, Box::new(list[3].clone()));
-        env_set(heap, env, name.clone(), mac.clone());
-        Ok(mac)
+        env_set(heap, env, name.clone(), mac);
+        // defmacro returns () — same convention as define.
+        Ok(Expr::List(vec![]))
     } else {
         Err("invalid defmacro: expected (defmacro <symbol> (<params...>) <body>)".into())
     }
@@ -457,6 +459,64 @@ fn eval_let(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Step, String> {
     Ok(Step::TailCall {
         expr: body[body.len() - 1].clone(),
         env: new_e,
+    })
+}
+
+/// `(let* ((name expr)...) body...)`
+///
+/// Sequential let semantics: each binding is evaluated immediately and is
+/// visible to the following bindings.  All bindings and the body share a
+/// single child scope opened before the first binding.
+fn eval_let_star(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Step, String> {
+    if list.len() < 3 {
+        return Err(format!(
+            "let* expects at least 2 arguments (bindings body), got {}",
+            list.len() - 1
+        ));
+    }
+    // Open a single child scope — all bindings and the body share it.
+    let child_env = crate::expr::new_env(heap, Some(env));
+
+    if let Expr::List(bindings) = &list[1] {
+        for b in bindings {
+            match b {
+                Expr::List(pair) if pair.len() == 2 => {
+                    if let Expr::Symbol(name) = &pair[0] {
+                        // Evaluate RHS in the *current* (sequentially extended)
+                        // child env so later bindings can see earlier ones.
+                        let val = eval(&pair[1], child_env, heap)?;
+                        crate::env::env_set(heap, child_env, name.clone(), val);
+                    } else {
+                        return Err(format!(
+                            "let* binding name must be a symbol, got: {:?}",
+                            pair[0]
+                        ));
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "let* binding must be a (name expr) pair, got: {:?}",
+                        other
+                    ));
+                }
+            }
+        }
+    } else {
+        return Err(format!(
+            "let* expects a list of bindings, got: {:?}",
+            list[1]
+        ));
+    }
+
+    let body = &list[2..];
+    // Evaluate all but the last body expression eagerly.
+    for e in &body[..body.len() - 1] {
+        eval(e, child_env, heap)?;
+    }
+    // Last body expression is in tail position — trampoline into child_env.
+    Ok(Step::TailCall {
+        expr: body[body.len() - 1].clone(),
+        env: child_env,
     })
 }
 

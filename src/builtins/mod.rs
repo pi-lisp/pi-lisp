@@ -3,6 +3,7 @@ mod asm;
 mod base;
 mod cubical;
 mod utils;
+mod network;
 
 use crate::env::{Env, new_env};
 use crate::expr::Expr;
@@ -59,6 +60,7 @@ pub fn global_env(heap: &mut Heap) -> Env {
     utils::register_os(env, heap);
     cubical::register_cubical(env, heap);
     cubical::register_load_cubical(env, heap);
+    network::register_network(env, heap);
     #[cfg(all(feature = "jit", target_arch = "x86_64"))]
     asm::register_assembler(env, heap);
     #[cfg(all(feature = "jit", target_arch = "x86_64"))]

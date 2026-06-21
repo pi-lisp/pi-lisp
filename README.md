@@ -7,8 +7,10 @@ A lightweight, experimental Lisp interpreter written in Rust. Beyond standard Li
 Make sure you have [Rust and Cargo installed](https://www.rust-lang.org/tools/install). Clone the repository and execute the test harness containing the sample expressions:
 
 ```bash
-cargo run --no-default-features --features vm --release hello1.uwu
-cargo run --release hello1.uwu
+cargo run --release
+#if you use nix
+nix run github:username/uwulisp
+nix shell github:username/uwulisp
 ```
 
 ## document

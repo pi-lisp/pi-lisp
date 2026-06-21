@@ -290,7 +290,7 @@ impl<'h> VM<'h> {
     ///
     /// Returns the final value or a runtime error string.
     pub fn run(&mut self) -> Result<VmValue, String> {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(feature = "jit", target_arch = "x86_64"))]
         if self.frames.len() == 1 {
             let chunk = Rc::clone(&self.frames[0].chunk);
             let frame_key = format!("{}", chunk.id);
@@ -618,7 +618,7 @@ impl<'h> VM<'h> {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(feature = "jit", target_arch = "x86_64"))]
     fn run_jit(&mut self, fp: unsafe extern "C" fn(*mut crate::vm::jit_abi::JitFrame)) -> Result<VmValue, String> {
         let mut frame = crate::vm::jit_abi::JitFrame::new(self);
         unsafe { fp(&mut frame) };

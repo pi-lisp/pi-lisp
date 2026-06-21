@@ -1,3 +1,4 @@
+#[cfg(all(feature = "jit", target_arch = "x86_64"))]
 mod asm;
 mod base;
 mod cubical;
@@ -58,8 +59,11 @@ pub fn global_env(heap: &mut Heap) -> Env {
     utils::register_os(env, heap);
     cubical::register_cubical(env, heap);
     cubical::register_load_cubical(env, heap);
+    #[cfg(all(feature = "jit", target_arch = "x86_64"))]
     asm::register_assembler(env, heap);
+    #[cfg(all(feature = "jit", target_arch = "x86_64"))]
     asm::register_load_asm(env, heap);
+    #[cfg(all(feature = "jit", target_arch = "x86_64"))]
     asm::register_load_asm_parallel(env, heap);
 
     env

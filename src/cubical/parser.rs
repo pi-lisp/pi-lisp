@@ -319,6 +319,8 @@ struct Parser {
     ivar_env: Vec<Name>,
     global_env: Vec<Name>,
     datatypes: Vec<Datatype>,
+    /// When true, `starts_atom` treats the keyword `with` as a stop token.
+    stop_at_with: bool,
 }
 
 impl Parser {
@@ -330,6 +332,7 @@ impl Parser {
             ivar_env: Vec::new(),
             global_env: Vec::new(),
             datatypes: Vec::new(),
+            stop_at_with: false,
         }
     }
 
@@ -704,6 +707,9 @@ impl Parser {
         if self.consume_ident("elim[") {
             return self.parse_elim();
         }
+        if self.consume_ident("match") {
+            return self.parse_match();
+        }
 
         match self.peek().kind.clone() {
             TokenKind::Ident(name) => {
@@ -789,10 +795,54 @@ impl Parser {
         if bracketed {
             self.expect(TokenKind::RBracket, "expected ']' after eliminator motive")?;
         }
-        self.expect(TokenKind::LBrace, "expected '{' before eliminator cases")?;
+        let cases = self.parse_elim_cases(true)?;
+        let scrutinee = self.parse_term()?;
+        Ok(Term::TElim(Box::new(motive), cases, Box::new(scrutinee)))
+    }
+
+    fn parse_match(&mut self) -> Result<Term, ParseError> {
+        let (scrutinee, binder) = if let TokenKind::Ident(name) = self.peek().kind.clone() {
+            self.pos += 1;
+            let scrut = self.resolve_ident(name.clone())?;
+            (scrut, name)
+        } else {
+            (self.parse_term()?, "_match".to_string())
+        };
+
+        self.term_env.insert(0, binder.clone());
+        self.expect_ident("return")?;
+        self.stop_at_with = true;
+        let return_type = self.parse_term()?;
+        self.stop_at_with = false;
+        self.term_env.remove(0);
+
+        self.expect_ident("with")?;
+        let cases = self.parse_elim_cases(false)?;
+        let motive = Term::TAbs(binder, Box::new(return_type));
+        Ok(Term::TElim(Box::new(motive), cases, Box::new(scrutinee)))
+    }
+
+    /// Parse eliminator/match case arms. When `require_brace` is true (`elim`), `{`
+    /// is mandatory; when false (`match`), cases may start with `|` or `{ | ... }`.
+    fn parse_elim_cases(&mut self, require_brace: bool) -> Result<Vec<ElimCase>, ParseError> {
+        let braced = if require_brace {
+            self.expect(TokenKind::LBrace, "expected '{' before eliminator cases")?;
+            true
+        } else {
+            let braced = self.consume(&TokenKind::LBrace);
+            if !braced && !self.at(&TokenKind::Pipe) {
+                return Err(self.error_here("expected '{' or '|' before match cases"));
+            }
+            braced
+        };
+
         let mut cases = Vec::new();
         self.consume(&TokenKind::Pipe);
-        while !self.at(&TokenKind::RBrace) {
+        loop {
+            if braced && self.at(&TokenKind::RBrace) {
+                break;
+            }
+
             let con = self.expect_ident("expected constructor name in eliminator case")?;
             let mut binders = Vec::new();
             while let TokenKind::Ident(name) = self.peek().kind.clone() {
@@ -822,9 +872,11 @@ impl Parser {
                 break;
             }
         }
-        self.expect(TokenKind::RBrace, "expected '}' after eliminator cases")?;
-        let scrutinee = self.parse_term()?;
-        Ok(Term::TElim(Box::new(motive), cases, Box::new(scrutinee)))
+
+        if braced {
+            self.expect(TokenKind::RBrace, "expected '}' after eliminator cases")?;
+        }
+        Ok(cases)
     }
 
     fn resolve_ident(&self, name: Name) -> Result<Term, ParseError> {
@@ -907,6 +959,13 @@ impl Parser {
     fn starts_atom(&self) -> bool {
         if self.is_decl_start() {
             return false;
+        }
+        if self.stop_at_with {
+            if let TokenKind::Ident(name) = &self.peek().kind {
+                if name == "with" {
+                    return false;
+                }
+            }
         }
         matches!(
             &self.peek().kind,
@@ -1154,6 +1213,91 @@ mod tests {
             }
             _ => panic!("expected eliminator"),
         }
+    }
+
+    #[test]
+    fn parses_match() {
+        let src = "match n return Nat with | zero => z | suc m => s";
+        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
+        parser.global_env = vec![
+            "s".to_string(),
+            "z".to_string(),
+            "Nat".to_string(),
+            "n".to_string(),
+        ];
+        let term = parser.parse_term().unwrap();
+        match term {
+            Term::TElim(motive, cases, scrut) => {
+                assert_eq!(*scrut, Term::TVar(3));
+                assert_eq!(*motive, Term::TAbs("n".to_string(), Box::new(Term::TVar(3))));
+                assert_eq!(cases.len(), 2);
+                assert_eq!(cases[0].con, "zero");
+                assert_eq!(cases[0].binders, Vec::<String>::new());
+                assert_eq!(cases[1].con, "suc");
+                assert_eq!(cases[1].binders, vec!["m".to_string()]);
+            }
+            _ => panic!("expected match to desugar to eliminator"),
+        }
+    }
+
+    #[test]
+    fn parses_match_with_braced_cases() {
+        let src = "match n return Nat with { | zero => z | suc m => s }";
+        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
+        parser.global_env = vec![
+            "s".to_string(),
+            "z".to_string(),
+            "Nat".to_string(),
+            "n".to_string(),
+        ];
+        let term = parser.parse_term().unwrap();
+        assert!(matches!(term, Term::TElim(_, _, _)));
+    }
+
+    #[test]
+    fn parses_match_dependent_return_type() {
+        let src = "match n return n with | zero => z | suc m => s";
+        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
+        parser.global_env = vec![
+            "s".to_string(),
+            "z".to_string(),
+            "n".to_string(),
+        ];
+        let term = parser.parse_term().unwrap();
+        match term {
+            Term::TElim(motive, _, _) => {
+                assert_eq!(
+                    *motive,
+                    Term::TAbs("n".to_string(), Box::new(Term::TVar(0)))
+                );
+            }
+            _ => panic!("expected match to desugar to eliminator"),
+        }
+    }
+
+    #[test]
+    fn match_desugars_to_equivalent_elim() {
+        let src = "match n return Nat with | zero => z | suc m => s";
+        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
+        parser.global_env = vec![
+            "s".to_string(),
+            "z".to_string(),
+            "Nat".to_string(),
+            "n".to_string(),
+        ];
+        let from_match = parser.parse_term().unwrap();
+
+        let elim_src = "elim (\\n. Nat) { | zero => z | suc m => s } n";
+        let mut elim_parser = Parser::new(Lexer::new(elim_src).lex().unwrap());
+        elim_parser.global_env = vec![
+            "s".to_string(),
+            "z".to_string(),
+            "Nat".to_string(),
+            "n".to_string(),
+        ];
+        let from_elim = elim_parser.parse_term().unwrap();
+
+        assert_eq!(from_match, from_elim);
     }
 
     #[test]

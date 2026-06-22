@@ -99,40 +99,46 @@ fn is_balanced(src: &str) -> bool {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Create the single GC heap that owns all environment frames for the
-    // lifetime of this interpreter process.
     let mut heap = Heap::new();
-
-    // global_env is the permanent root: it must be passed to every GC
-    // collection so the mark phase never frees the top-level frame.
     let global_env = builtins::global_env(&mut heap);
 
     if args.len() < 2 {
         repl(global_env, &mut heap);
     } else {
-        for file_path in &args[1..] {
-            let src = match fs::read_to_string(file_path) {
-                Ok(content) => content,
-                Err(err) => {
-                    eprintln!(
-                        "An error occurred while reading the file '{}': {}",
-                        file_path, err
-                    );
+        let mut i = 1;
+        while i < args.len() {
+            if args[i] == "--cubical" {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --cubical requires a filename argument");
                     process::exit(1);
                 }
-            };
-            let base = Path::new(file_path).parent();
-            with_import_base(base, || run(&src, global_env, &mut heap));
+                match cubical::run(&args[i]) {
+                    Ok(output) => println!("=> {:?}", output),
+                    Err(err) => eprintln!("Cubical error: {}", err),
+                }
+            } else {
+                let file_path = &args[i];
+                let src = match fs::read_to_string(file_path) {
+                    Ok(content) => content,
+                    Err(err) => {
+                        eprintln!(
+                            "An error occurred while reading the file '{}': {}",
+                            file_path, err
+                        );
+                        process::exit(1);
+                    }
+                };
+                let base = Path::new(file_path).parent();
+                with_import_base(base, || run(&src, global_env, &mut heap));
 
-            // Print compile-cache statistics when the VM feature is active.
-            #[cfg(feature = "vm")]
-            {
-                let (chunks, compilable) = crate::vm::cache_stats();
-                eprintln!(
-                    "[cache] chunks={} compilable={}",
-                    chunks, compilable
-                );
+                #[cfg(feature = "vm")]
+                {
+                    let (chunks, compilable) = crate::vm::cache_stats();
+                    eprintln!("[cache] chunks={} compilable={}", chunks, compilable);
+                }
             }
+            i += 1;
         }
     }
 }

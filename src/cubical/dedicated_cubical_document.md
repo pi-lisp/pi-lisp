@@ -230,6 +230,44 @@ elim motive { | zero => base_case | suc n => step } value
 
 ---
 
+## Pattern matching
+
+`match` is sugar for an eliminator with a motive derived from an explicit return type:
+
+```
+match <scrutinee> return <return_type> with
+  | <con1> <binders> => <body1>
+  | <con2> <binders> => <body2>
+  ...
+```
+
+`->` may be used in place of `=>` in case branches. Cases may be written with or without braces:
+
+```
+match n return Nat with | zero => z | suc m => s
+match n return Nat with { | zero => z | suc m => s }
+```
+
+When the scrutinee is a bare identifier, that name is in scope in the return type (for dependent elimination). Otherwise the scrutinee is bound as `_match` in the return type.
+
+Example (non-dependent):
+
+```
+match n return Nat with
+  | zero => zero
+  | suc m => suc m
+```
+
+This desugars to:
+
+```
+elim (\n. Nat) { | zero => zero | suc m => suc m } n
+```
+
+Path-constructor cases follow the same rules as `elim`: list ordinary argument binders first, then the interval variable last.
+
+---
+
 ## Cubical Primitives
 
 ### Transport

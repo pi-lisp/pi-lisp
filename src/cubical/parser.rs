@@ -360,6 +360,8 @@ struct Parser {
     datatypes: Vec<Datatype>,
     /// When true, `starts_atom` treats the keyword `with` as a stop token.
     stop_at_with: bool,
+    /// When true, `starts_atom` treats the keyword `in` as a stop token.
+    stop_at_in: bool,
 }
 
 impl Parser {
@@ -372,6 +374,7 @@ impl Parser {
             global_env: Vec::new(),
             datatypes: Vec::new(),
             stop_at_with: false,
+            stop_at_in: false,
         }
     }
 
@@ -508,6 +511,9 @@ impl Parser {
     }
 
     fn parse_lambda(&mut self) -> Result<Term, ParseError> {
+        if self.consume_ident("let") {
+            return self.parse_let();
+        }
         if self.consume(&TokenKind::Backslash) {
             let binders = self.parse_one_or_more_idents("expected lambda binder after '\\'")?;
             self.expect(TokenKind::Dot, "expected '.' after lambda binder list")?;
@@ -568,6 +574,32 @@ impl Parser {
             return Ok(Term::TSigma(binder, Box::new(ty), Box::new(body)));
         }
         self.parse_pair()
+    }
+
+    fn parse_let(&mut self) -> Result<Term, ParseError> {
+        let binder = self.expect_ident("expected binder after 'let'")?;
+
+        if self.consume(&TokenKind::Colon) {
+            let _ty = self.parse_term()?;
+        }
+        self.expect(TokenKind::Equals, "expected '=' after let binder")?;
+
+        let value = {
+            self.stop_at_in = true;
+            let v = self.parse_term()?;
+            self.stop_at_in = false;
+            v
+        };
+        self.expect_ident("in")?;
+
+        self.term_env.insert(0, binder.clone());
+        let body = self.parse_term()?;
+        self.term_env.remove(0);
+
+        Ok(Term::TApp(
+            Box::new(Term::TAbs(binder, Box::new(body))),
+            Box::new(value),
+        ))
     }
 
     fn parse_pair(&mut self) -> Result<Term, ParseError> {
@@ -1006,6 +1038,13 @@ impl Parser {
                 }
             }
         }
+        if self.stop_at_in {
+            if let TokenKind::Ident(name) = &self.peek().kind {
+                if name == "in" {
+                    return false;
+                }
+            }
+        }
         matches!(
             &self.peek().kind,
             TokenKind::Ident(_) | TokenKind::Int(_) | TokenKind::LParen
@@ -1337,6 +1376,35 @@ mod tests {
         let from_elim = elim_parser.parse_term().unwrap();
 
         assert_eq!(from_match, from_elim);
+    }
+
+    fn parse_let_with_globals(src: &str, globals: &[&str]) -> Term {
+        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
+        parser.global_env = globals.iter().map(|s| s.to_string()).collect();
+        parser.parse_term().unwrap()
+    }
+
+    #[test]
+    fn parses_let() {
+        let term = parse_let_with_globals("let x = t in x", &["t"]);
+        assert_eq!(
+            term,
+            Term::TApp(
+                Box::new(Term::TAbs("x".to_string(), Box::new(Term::TVar(0)))),
+                Box::new(Term::TVar(0))
+            )
+        );
+    }
+
+    #[test]
+    fn let_desugars_to_application_of_lambda() {
+        let from_let = parse_let_with_globals("let x = a in b", &["a", "b"]);
+
+        let mut parser = Parser::new(Lexer::new("(\\x. b) a").lex().unwrap());
+        parser.global_env = vec!["a".to_string(), "b".to_string()];
+        let from_lambda = parser.parse_term().unwrap();
+
+        assert_eq!(from_let, from_lambda);
     }
 
     #[test]

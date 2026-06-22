@@ -93,6 +93,29 @@ fun x y z => <body>
 
 The `λ` Unicode character is also accepted in place of `\`.
 
+### Let expressions
+
+```
+let <x> = <value> in <body>
+let <x> : <type> = <value> in <body>
+```
+
+Type annotations are parsed but currently discarded (same as parenthesised ascriptions).
+
+Example:
+
+```
+let n = suc zero in n
+```
+
+This desugars to:
+
+```
+(\n. n) (suc zero)
+```
+
+Nested `let` binds at the same precedence as `\` and `fun`.
+
 ### Function application
 
 ```
@@ -309,7 +332,7 @@ From lowest to highest binding:
 
 | Level | Construct |
 |-------|-----------|
-| 1 (lowest) | `\x.`, `fun x =>`, `<i>`, `Pi`, `Sigma`, `,` (pair) |
+| 1 (lowest) | `\x.`, `fun x =>`, `let x = t in u`, `<i>`, `Pi`, `Sigma`, `,` (pair) |
 | 2 | `->`, `*` (non-dependent arrow/product, right-assoc) |
 | 3 | `\/` (interval join) |
 | 4 | `/\` (interval meet) |
@@ -348,7 +371,8 @@ decl     ::= 'def' ident ':' term '=' term
 
 con_decl ::= ident ':' term ('[' term ',' term ']')?
 
-term     ::= '\' ident+ '.' term
+term     ::= 'let' ident (':' term)? '=' term 'in' term
+           | '\' ident+ '.' term
            | 'fun' ident+ '=>' term
            | '<' ident '>' term
            | 'Pi' '(' ident ':' term ')' '.' term

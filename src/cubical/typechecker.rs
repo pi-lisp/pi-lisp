@@ -1149,16 +1149,15 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                     ord_var.clone(),
                     Box::new(Term::TInterval(I::I1)),
                 ));
-                let u = nbe_eval(&Term::TApp(
-                    Box::new(motive_shifted.clone()),
-                    Box::new(face0_term),
-                ));
-                let v = nbe_eval(&Term::TApp(Box::new(motive_shifted), Box::new(face1_term)));
+                let face0_case =
+                    eval_elim_face(motive, cases, &pcon_sig.face0, &ord_var_no_i, arity as i32);
+                let face1_case =
+                    eval_elim_face(motive, cases, &pcon_sig.face1, &ord_var_no_i, arity as i32);
 
                 let expected_body_ty = Term::TPath(
                     Box::new(Term::PLam(i_name.clone(), Box::new(motive_at_pcon))),
-                    Box::new(u),
-                    Box::new(v),
+                    Box::new(face0_case.clone()),
+                    Box::new(face1_case.clone()),
                 );
                 check_dt(dts, &case_ctx, &case.body, &expected_body_ty)?;
 
@@ -1182,10 +1181,6 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                         Box::new(Term::TInterval(I::I1)),
                     )),
                 };
-                let face0_case =
-                    eval_elim_face(motive, cases, &pcon_sig.face0, &ord_var_no_i, arity as i32);
-                let face1_case =
-                    eval_elim_face(motive, cases, &pcon_sig.face1, &ord_var_no_i, arity as i32);
                 require_equal_endpt(&ord_case_ctx, &face0_case, &body_at0)?;
                 require_equal_endpt(&ord_case_ctx, &face1_case, &body_at1)?;
             }
@@ -1210,10 +1205,17 @@ fn reduce_pcon_endpoints_dt(dts: &[Datatype], t: &Term) -> Term {
     match &t {
         Term::TPCon(d, pc, args, r) => {
             let r_nf = nbe_eval(r);
-            let is_i0 = is_bot_dnf(&r_nf);
-            let is_i1 = is_top_dnf(&r_nf);
+            let (is_i0, is_i1) = match &r_nf {
+                Term::TInterval(i) => {
+                    let dnf = crate::cubical::interval::eval_interval(i);
+                    (dnf == crate::cubical::interval::dnf_bot(), dnf == crate::cubical::interval::dnf_top())
+                }
+                Term::TCube(d) => {
+                    (d == &crate::cubical::interval::dnf_bot(), d == &crate::cubical::interval::dnf_top())
+                }
+                _ => (false, false),
+            };
             if is_i0 || is_i1 {
-                eprintln!("DEBUG reduce_pcon: d={} pc={} is_i0={} is_i1={} dts_len={} dts_names={:?}", d, pc, is_i0, is_i1, dts.len(), dts.iter().map(|dt| &dt.name).collect::<Vec<_>>());
                 // Look up the face value from the PConSig.
                 if let Some(dt) = dts.iter().find(|dt| &dt.name == d) {
                     if let Some(sig) = dt.find_pcon(pc) {
@@ -1307,7 +1309,6 @@ pub fn check_dt(dts: &[Datatype], ctx: &Ctx, t: &Term, ty: &Term) -> Result<(), 
                 dts,
                 &apply_literal(&Literal::Pos(0), body),
             );
-            eprintln!("DEBUG PLam check: ctx_depth={} body={} u={} body_at0={}", ctx.len(), body, nbe_eval(&u), body_at0);
             require_equal_endpt(ctx, &nbe_eval(&u), &body_at0)?;
             require_equal_endpt(ctx, &nbe_eval(&v), &body_at1)?;
             check_dt(dts, &ctx2, body, &body_ty)

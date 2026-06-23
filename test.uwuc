@@ -25,9 +25,9 @@ data S1 =
 -- A path is built with interval abstraction
 def loopPath : Path S1 base base = <i> loop @ i
 
-def flipLoop : S1 -> Path S1 base base =
-  \x. match x return Path S1 base base with
-    | base => <i> base
+def flipLoop : S1 -> S1 =
+  \x. match x return S1 with
+    | base => base
     | loop i => <i> loop @ (~ i)
 
 def swap : (A : U0) * (B : U0) -> (B : U0) * (A : U0) =

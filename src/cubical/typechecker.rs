@@ -1162,14 +1162,26 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 );
                 check_dt(dts, &case_ctx, &case.body, &expected_body_ty)?;
 
-                let body_at0 = nbe_eval(&Term::PApp(
-                    case.body.clone(),
-                    Box::new(Term::TInterval(I::I0)),
-                ));
-                let body_at1 = nbe_eval(&Term::PApp(
-                    case.body.clone(),
-                    Box::new(Term::TInterval(I::I1)),
-                ));
+                let body_at0 = match case.body.as_ref() {
+                    Term::PLam(_, inner) => reduce_pcon_endpoints_dt(
+                        dts,
+                        &apply_literal(&Literal::NegVar(0), inner),
+                    ),
+                    _ => nbe_eval(&Term::PApp(
+                        case.body.clone(),
+                        Box::new(Term::TInterval(I::I0)),
+                    )),
+                };
+                let body_at1 = match case.body.as_ref() {
+                    Term::PLam(_, inner) => reduce_pcon_endpoints_dt(
+                        dts,
+                        &apply_literal(&Literal::Pos(0), inner),
+                    ),
+                    _ => nbe_eval(&Term::PApp(
+                        case.body.clone(),
+                        Box::new(Term::TInterval(I::I1)),
+                    )),
+                };
                 let face0_case =
                     eval_elim_face(motive, cases, &pcon_sig.face0, &ord_var_no_i, arity as i32);
                 let face1_case =
@@ -1198,9 +1210,10 @@ fn reduce_pcon_endpoints_dt(dts: &[Datatype], t: &Term) -> Term {
     match &t {
         Term::TPCon(d, pc, args, r) => {
             let r_nf = nbe_eval(r);
-            let is_i0 = r_nf == Term::TInterval(crate::cubical::interval::I::I0);
-            let is_i1 = r_nf == Term::TInterval(crate::cubical::interval::I::I1);
+            let is_i0 = is_bot_dnf(&r_nf);
+            let is_i1 = is_top_dnf(&r_nf);
             if is_i0 || is_i1 {
+                eprintln!("DEBUG reduce_pcon: d={} pc={} is_i0={} is_i1={} dts_len={} dts_names={:?}", d, pc, is_i0, is_i1, dts.len(), dts.iter().map(|dt| &dt.name).collect::<Vec<_>>());
                 // Look up the face value from the PConSig.
                 if let Some(dt) = dts.iter().find(|dt| &dt.name == d) {
                     if let Some(sig) = dt.find_pcon(pc) {
@@ -1294,6 +1307,7 @@ pub fn check_dt(dts: &[Datatype], ctx: &Ctx, t: &Term, ty: &Term) -> Result<(), 
                 dts,
                 &apply_literal(&Literal::Pos(0), body),
             );
+            eprintln!("DEBUG PLam check: ctx_depth={} body={} u={} body_at0={}", ctx.len(), body, nbe_eval(&u), body_at0);
             require_equal_endpt(ctx, &nbe_eval(&u), &body_at0)?;
             require_equal_endpt(ctx, &nbe_eval(&v), &body_at1)?;
             check_dt(dts, &ctx2, body, &body_ty)

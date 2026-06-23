@@ -167,7 +167,7 @@ impl Parser {
     fn parse_face_with_extra_datatype(&mut self, dt: &Datatype) -> Result<Term, ParseError> {
         let old_len = self.datatypes.len();
         self.datatypes.push(dt.clone());
-        let term = self.parse_arrow_star();
+        let term = self.parse_arrow();
         self.datatypes.truncate(old_len);
         term
     }
@@ -219,7 +219,9 @@ impl Parser {
             let binder = self.expect_ident("expected interval binder after '<'")?;
             self.expect(TokenKind::RAngle, "expected '>' after interval binder")?;
             self.ivar_env.insert(0, binder.clone());
+            self.term_env.insert(0, "".to_string());
             let body = self.parse_term()?;
+            self.term_env.remove(0);
             self.ivar_env.remove(0);
             return Ok(Term::PLam(binder, Box::new(body)));
         }
@@ -269,7 +271,7 @@ impl Parser {
     }
 
     fn parse_pair(&mut self) -> Result<Term, ParseError> {
-        let left = self.parse_arrow_star()?;
+        let left = self.parse_arrow()?;
         if self.consume(&TokenKind::Comma) {
             let right = self.parse_term()?;
             Ok(Term::TPair(Box::new(left), Box::new(right)))
@@ -278,16 +280,27 @@ impl Parser {
         }
     }
 
-    fn parse_arrow_star(&mut self) -> Result<Term, ParseError> {
-        let left = self.parse_join()?;
+    /// Parse `->` (non-dependent Pi) at the lowest precedence.
+    /// `A * B -> C * D` parses as `(A * B) -> (C * D)`.
+    fn parse_arrow(&mut self) -> Result<Term, ParseError> {
+        let left = self.parse_sigma()?;
         if self.consume(&TokenKind::Arrow) {
             self.term_env.insert(0, "_".to_string());
-            let right = self.parse_arrow_star()?;
+            let right = self.parse_arrow()?;
             self.term_env.remove(0);
             Ok(Term::TPi("_".to_string(), Box::new(left), Box::new(right)))
-        } else if self.consume(&TokenKind::Star) {
+        } else {
+            Ok(left)
+        }
+    }
+
+    /// Parse `*` (non-dependent Sigma/product) at a higher precedence than `->`.
+    /// `A * B * C` parses as `A * (B * C)` (right-associative).
+    fn parse_sigma(&mut self) -> Result<Term, ParseError> {
+        let left = self.parse_join()?;
+        if self.consume(&TokenKind::Star) {
             self.term_env.insert(0, "_".to_string());
-            let right = self.parse_arrow_star()?;
+            let right = self.parse_sigma()?;
             self.term_env.remove(0);
             Ok(Term::TSigma(
                 "_".to_string(),
@@ -472,21 +485,45 @@ impl Parser {
 
     fn parse_paren(&mut self) -> Result<Term, ParseError> {
         self.expect(TokenKind::LParen, "expected '('")?;
-        if let Some(name) = self.try_parse_binder_header()? {
+        if let Some((names, ty)) = self.try_parse_binder_header()? {
             self.expect(TokenKind::RParen, "unmatched '('")?;
             if self.consume(&TokenKind::Arrow) {
-                self.term_env.insert(0, name.0.clone());
-                let body = self.parse_arrow_star()?;
-                self.term_env.remove(0);
-                return Ok(Term::TPi(name.0, Box::new(name.1), Box::new(body)));
+                // (x y : T) -> body  — dependent Pi; body is an arrow-level term
+                for name in &names {
+                    self.term_env.insert(0, name.clone());
+                }
+                let body = self.parse_arrow()?;
+                for _ in &names {
+                    self.term_env.remove(0);
+                }
+                let mut term = body;
+                for (idx, name) in names.into_iter().enumerate().rev() {
+                    let shifted_ty = crate::cubical::syntax::shift(idx as i32, 0, &ty);
+                    term = Term::TPi(name, Box::new(shifted_ty), Box::new(term));
+                }
+                return Ok(term);
             }
             if self.consume(&TokenKind::Star) {
-                self.term_env.insert(0, name.0.clone());
-                let body = self.parse_arrow_star()?;
-                self.term_env.remove(0);
-                return Ok(Term::TSigma(name.0, Box::new(name.1), Box::new(body)));
+                // (x y : T) * body  — dependent Sigma; body is a sigma-level term
+                for name in &names {
+                    self.term_env.insert(0, name.clone());
+                }
+                let body = self.parse_sigma()?;
+                for _ in &names {
+                    self.term_env.remove(0);
+                }
+                let mut term = body;
+                for (idx, name) in names.into_iter().enumerate().rev() {
+                    let shifted_ty = crate::cubical::syntax::shift(idx as i32, 0, &ty);
+                    term = Term::TSigma(name, Box::new(shifted_ty), Box::new(term));
+                }
+                return Ok(term);
             }
-            return self.resolve_ident(name.0);
+            if names.len() == 1 {
+                return self.resolve_ident(names[0].clone());
+            } else {
+                return Err(self.error_here("expected '->' or '*' after multiple binder headers"));
+            }
         }
         let term = self.parse_term()?;
         if self.consume(&TokenKind::Colon) {
@@ -513,21 +550,23 @@ impl Parser {
         Ok((binder, ty))
     }
 
-    fn try_parse_binder_header(&mut self) -> Result<Option<(Name, Term)>, ParseError> {
+    fn try_parse_binder_header(&mut self) -> Result<Option<(Vec<Name>, Term)>, ParseError> {
         let save = self.pos;
-        let name = match self.peek().kind.clone() {
-            TokenKind::Ident(n) => {
-                self.pos += 1;
-                n
-            }
-            _ => return Ok(None),
-        };
+        let mut names = Vec::new();
+        while let TokenKind::Ident(n) = self.peek().kind.clone() {
+            self.pos += 1;
+            names.push(n);
+        }
+        if names.is_empty() {
+            self.pos = save;
+            return Ok(None);
+        }
         if !self.consume(&TokenKind::Colon) {
             self.pos = save;
             return Ok(None);
         }
         let ty = self.parse_term()?;
-        Ok(Some((name, ty)))
+        Ok(Some((names, ty)))
     }
 
     fn parse_elim(&mut self) -> Result<Term, ParseError> {
@@ -594,12 +633,31 @@ impl Parser {
                 binders.push(name);
             }
             if self.consume(&TokenKind::FatArrow) || self.consume(&TokenKind::Arrow) {
-                for binder in binders.iter().rev() {
+                                // Determine if this is a path constructor: if so, the last
+                // binder is the interval variable and should go into ivar_env.
+                let is_path_con = self
+                    .find_constructor(&con)
+                    .is_some_and(|(_, is_path)| is_path);
+                let (ord_binders, ivar_binder) = if is_path_con && !binders.is_empty() {
+                    let split = binders.len() - 1;
+                    (&binders[..split], Some(&binders[split]))
+                } else {
+                    (&binders[..], None)
+                };
+                for binder in ord_binders.iter().rev() {
                     self.term_env.insert(0, binder.clone());
                 }
+                if let Some(iv) = ivar_binder {
+                    self.ivar_env.insert(0, iv.clone());
+                    self.term_env.insert(0, "".to_string());
+                }
                 let body = self.parse_term()?;
-                for _ in &binders {
+                for _ in ord_binders {
                     self.term_env.remove(0);
+                }
+                if ivar_binder.is_some() {
+                    self.term_env.remove(0);
+                    self.ivar_env.remove(0);
                 }
                 cases.push(ElimCase {
                     con,
@@ -797,6 +855,7 @@ fn parse_universe(name: &str) -> Option<i32> {
 fn expect_interval(term: Term, parser: &Parser) -> Result<I, ParseError> {
     match term {
         Term::TInterval(i) => Ok(i),
+        Term::TVar(idx) => Ok(I::IVar(idx)),
         other => Err(parser.error_here(format!("expected interval expression, got {:?}", other))),
     }
 }

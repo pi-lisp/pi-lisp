@@ -2,7 +2,7 @@ use super::grammar::Parser;
 use super::lexer::{Lexer, TokenKind};
 use super::*;
 use crate::cubical::interval::I;
-use crate::cubical::syntax::{show_term, Term};
+use crate::cubical::syntax::{Term, show_term};
 
 #[test]
 fn parses_lambda_identity() {

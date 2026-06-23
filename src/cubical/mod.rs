@@ -8,7 +8,9 @@ pub mod syntax;
 pub mod transpile;
 pub mod typechecker;
 
-pub use transpile::{transpile, transpile_source, write_output, EmittedModule, TranspileError, TranspileOutput};
+pub use transpile::{
+    EmittedModule, TranspileError, TranspileOutput, transpile, transpile_source, write_output,
+};
 
 use std::collections::HashSet;
 use std::fmt;
@@ -158,22 +160,11 @@ fn load_import(
     }
 
     let source = std::fs::read_to_string(&resolved).map_err(|err| {
-        RunError::Import(format!(
-            "cannot read '{}': {}",
-            resolved.display(),
-            err
-        ))
+        RunError::Import(format!("cannot read '{}': {}", resolved.display(), err))
     })?;
 
     let nested_base = resolved.parent().unwrap_or(import_base);
-    process_file_source(
-        &source,
-        nested_base,
-        env,
-        loaded,
-        loading,
-        last_def,
-    )?;
+    process_file_source(&source, nested_base, env, loaded, loading, last_def)?;
 
     loading.remove(&canonical);
     loaded.insert(canonical);
@@ -190,25 +181,24 @@ fn process_data(dt: &crate::cubical::syntax::Datatype, env: &mut Env) -> Result<
     Ok(())
 }
 
-fn process_def(
-    name: &Name,
-    ty: &Term,
-    val: &Term,
-    env: &mut Env,
-) -> Result<RunOutput, RunError> {
-    let closed_ty = nbe_eval(&apply_globals(&env.defs, ty));
+fn process_def(name: &Name, ty: &Term, val: &Term, env: &mut Env) -> Result<RunOutput, RunError> {
+    println!("Checking definition: {}", name);
+    let closed_ty_globals = apply_globals(&env.defs, ty);
     let closed_val = val.clone();
 
-    match nbe_eval(&infer_with_full_env(env, &closed_ty)?) {
+    // Normalize only for the universe-level check; keep the original
+    // structure (e.g., Glue types) intact for body checking.
+    let closed_ty_nf = nbe_eval(&closed_ty_globals);
+    match nbe_eval(&infer_with_full_env(env, &closed_ty_nf)?) {
         Term::TUniv(_) => {}
         other => return Err(TypeError::ExpectedUniverse(other).into()),
     }
     // Register before checking the body so recursive calls resolve.
-    env.define(name.clone(), closed_ty.clone(), closed_val.clone());
-    check_with_full_env(env, &closed_val, &closed_ty)?;
+    env.define(name.clone(), closed_ty_globals.clone(), closed_val.clone());
+    check_with_full_env(env, &closed_val, &closed_ty_globals)?;
     let output = RunOutput {
         name: name.clone(),
-        ty: closed_ty.clone(),
+        ty: closed_ty_globals.clone(),
         value: nbe_eval(&closed_val),
     };
 
@@ -229,11 +219,7 @@ mod tests {
         let nat_path = dir.join("nat.uwuc");
         let main_path = dir.join("main.uwuc");
 
-        fs::write(
-            &nat_path,
-            "data Nat = | zero : Nat | suc : Nat -> Nat\n",
-        )
-        .unwrap();
+        fs::write(&nat_path, "data Nat = | zero : Nat | suc : Nat -> Nat\n").unwrap();
         fs::write(
             &main_path,
             "import \"nat.uwuc\"\n\ndef main : Nat -> Nat = \\n. n\n",

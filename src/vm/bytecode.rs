@@ -30,9 +30,9 @@
 //! offset `0` and then back-patches it once the target instruction is known
 //! (see `compiler.rs`).
 
-use std::rc::Rc;
-use crate::gc::{Heap, GcHandle};
 use crate::expr::Expr;
+use crate::gc::{GcHandle, Heap};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static CHUNK_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -96,10 +96,20 @@ impl PartialEq for Value {
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Nil, Value::Nil) => true,
             (Value::Builtin(a), Value::Builtin(b)) => Rc::ptr_eq(a, b),
-            (Value::Closure { params: p1, env: e1, body_chunk: c1, .. },
-             Value::Closure { params: p2, env: e2, body_chunk: c2, .. }) => {
-                p1 == p2 && e1 == e2 && Rc::ptr_eq(c1, c2)
-            }
+            (
+                Value::Closure {
+                    params: p1,
+                    env: e1,
+                    body_chunk: c1,
+                    ..
+                },
+                Value::Closure {
+                    params: p2,
+                    env: e2,
+                    body_chunk: c2,
+                    ..
+                },
+            ) => p1 == p2 && e1 == e2 && Rc::ptr_eq(c1, c2),
             _ => false,
         }
     }
@@ -149,7 +159,12 @@ pub fn value_to_expr(val: Value) -> Expr {
         Value::List(items) => Expr::List(items.into_iter().map(value_to_expr).collect()),
         Value::Nil => Expr::List(vec![]),
         Value::Builtin(f) => Expr::Func(f),
-        Value::Closure { params, body_expr, env, .. } => Expr::Lambda(params, body_expr, env),
+        Value::Closure {
+            params,
+            body_expr,
+            env,
+            ..
+        } => Expr::Lambda(params, body_expr, env),
     }
 }
 
@@ -218,7 +233,6 @@ pub enum Op {
     AppendSplice,
     /// Push an empty list.
     LoadNil,
-
 
     /// Discard the top of the stack (used to throw away the value of a
     /// non-tail expression in a `begin` sequence or a `define` side-effect).

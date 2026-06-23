@@ -47,12 +47,12 @@ pub fn lookup_ctx(i: i32, ctx: &Ctx) -> Result<Term, TypeError> {
 /// to something with an inferable type (e.g. `(\x. x) U0` reduces to `U0`,
 /// and `fst (a, b)` reduces to `a`). We retry inference on the fully
 /// reduced term, and only give up if reduction made no progress.
-fn infer_via_reduction(ctx: &Ctx, t: &Term, original_err: TypeError) -> Result<Term, TypeError> {
+fn infer_via_reduction(dts: &[Datatype], ctx: &Ctx, t: &Term, original_err: TypeError) -> Result<Term, TypeError> {
     let reduced = nbe_eval(t);
     if reduced == *t {
         Err(original_err)
     } else {
-        infer(ctx, &reduced)
+        infer_dt(dts, ctx, &reduced)
     }
 }
 
@@ -193,7 +193,11 @@ pub fn require_equal_endpt(ctx: &Ctx, expected: &Term, got: &Term) -> Result<(),
 }
 
 pub fn require_universe(ctx: &Ctx, t: &Term) -> Result<Level, TypeError> {
-    let ty = infer(ctx, t)?;
+    require_universe_dt(&[], ctx, t)
+}
+
+fn require_universe_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Level, TypeError> {
+    let ty = infer_dt(dts, ctx, t)?;
     match nbe_eval(&ty) {
         Term::TUniv(n) => Ok(n),
         other => Err(TypeError::ExpectedUniverse(other)),
@@ -253,11 +257,15 @@ fn type_level_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Level, TypeErr
 }
 
 pub fn check_interval(ctx: &Ctx, t: &Term) -> Result<(), TypeError> {
+    check_interval_dt(&[], ctx, t)
+}
+
+fn check_interval_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<(), TypeError> {
     match t {
         Term::TInterval(_) | Term::TCube(_) => return Ok(()),
         _ => {}
     }
-    let ty = infer(ctx, t)?;
+    let ty = infer_dt(dts, ctx, t)?;
     if ty == interval_ty() {
         Ok(())
     } else {
@@ -266,7 +274,11 @@ pub fn check_interval(ctx: &Ctx, t: &Term) -> Result<(), TypeError> {
 }
 
 pub fn require_equiv(ctx: &Ctx, t: &Term) -> Result<(Term, Term), TypeError> {
-    let ty = infer(ctx, t)?;
+    require_equiv_dt(&[], ctx, t)
+}
+
+fn require_equiv_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<(Term, Term), TypeError> {
+    let ty = infer_dt(dts, ctx, t)?;
     match nbe_eval(&ty) {
         Term::TEquiv(a, b) => Ok((nbe_eval(&a), nbe_eval(&b))),
         other => Err(TypeError::ExpectedEquiv(other)),
@@ -500,7 +512,7 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 check_dt(dts, ctx, a, &a_ty)?;
                 Ok(nbe_eval(&beta(&b_ty, a)))
             }
-            Err(e) => infer_via_reduction(ctx, t, e),
+            Err(e) => infer_via_reduction(dts, ctx, t, e),
         },
 
         // Pi formation: Π(x:A).B : U(max i j)
@@ -523,16 +535,16 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 Term::PLam(_, body) => nbe_eval(&beta(body, &Term::TInterval(I::I1))),
                 p => p.clone(),
             };
-            check(ctx, u, &u_ty)?;
-            check(ctx, v, &v_ty)?;
+            check_dt(dts, ctx, u, &u_ty)?;
+            check_dt(dts, ctx, v, &v_ty)?;
             Ok(Term::TUniv(n))
         }
 
         // Path application: p @ r
-        Term::PApp(p, r) => match infer(ctx, p) {
+        Term::PApp(p, r) => match infer_dt(dts, ctx, p) {
             Ok(p_ty) => match nbe_eval(&p_ty) {
                 Term::TPath(a_ty, _, _) => {
-                    check_interval(ctx, r)?;
+                    check_interval_dt(dts, ctx, r)?;
                     let r_ = nbe_eval(r);
                     Ok(match nbe_eval(&a_ty) {
                         Term::PLam(_, body) => nbe_eval(&beta(&body, &r_)),
@@ -541,7 +553,7 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 }
                 other => Err(TypeError::ExpectedPath(other)),
             },
-            Err(e) => infer_via_reduction(ctx, t, e),
+            Err(e) => infer_via_reduction(dts, ctx, t, e),
         },
 
         // Interval atoms
@@ -621,14 +633,14 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
 
         // equivFwd e x : B   where  e : Equiv A B,  x : A
         Term::TEquivFwd(e, x) => {
-            let (a, b) = require_equiv(ctx, e)?;
-            check(ctx, x, &a)?;
+            let (a, b) = require_equiv_dt(dts, ctx, e)?;
+            check_dt(dts, ctx, x, &a)?;
             Ok(b)
         }
 
         // ua e : Path U A B   where  e : Equiv A B
         Term::TUa(e) => {
-            let (a, b) = require_equiv(ctx, e)?;
+            let (a, b) = require_equiv_dt(dts, ctx, e)?;
             let n = type_level_dt(dts, ctx, &a)?;
             Ok(Term::TPath(
                 Box::new(Term::TUniv(n)),
@@ -646,24 +658,45 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 // body instead, the same way `infer` already does for
                 // TAbs-applied-to-argument in TApp.
                 Term::PLam(i, body) => {
+                    // The body typically has the form PApp(path, IVar(0)),
+                    // i.e. `<i> path @ i` which is equivalent to `path`.
+                    // Infer the type of `path` directly to get the TPath,
+                    // whose endpoints are the argument and return types.
+                    let path = match body.as_ref() {
+                        Term::PApp(path, _) => path.as_ref().clone(),
+                        _ => body.as_ref().clone(),
+                    };
                     let ctx2 = extend_ctx(i.clone(), interval_ty(), ctx);
-                    let a_ty = infer(&ctx2, body)?;
-                    let u = nbe_eval(&beta(body, &Term::TInterval(I::I0)));
-                    let v = nbe_eval(&beta(body, &Term::TInterval(I::I1)));
-                    Term::TPath(Box::new(a_ty), Box::new(u), Box::new(v))
+                    let path_ty = nbe_eval(&infer_dt(dts, &ctx2, &path)?);
+                    // path_ty should be TPath(a_ty, u, v). The endpoints
+                    // need to be shifted back to the outer context
+                    // (removing the interval binder at index 0).
+                    match path_ty {
+                        Term::TPath(a_ty, u, v) => {
+                            let u = shift(-1, 0, &u);
+                            let v = shift(-1, 0, &v);
+                            Term::TPath(a_ty, Box::new(u), Box::new(v))
+                        }
+                        other => {
+                            let a_ty = infer_dt(dts, &ctx2, body)?;
+                            let u = shift(-1, 0, &apply_literal(&Literal::NegVar(0), body));
+                            let v = shift(-1, 0, &apply_literal(&Literal::Pos(0), body));
+                            Term::TPath(Box::new(a_ty), Box::new(u), Box::new(v))
+                        }
+                    }
                 }
-                _ => infer(ctx, p)?,
+                _ => infer_dt(dts, ctx, p)?,
             };
             match nbe_eval(&p_ty) {
-                Term::TPath(a_ty, _, _) => {
+                Term::TPath(a_ty, u, v) => {
                     let (x_ty, ret_ty) = match nbe_eval(&a_ty) {
                         Term::PLam(_, body) => (
                             nbe_eval(&beta(&body, &Term::TInterval(I::I0))),
                             nbe_eval(&beta(&body, &Term::TInterval(I::I1))),
                         ),
-                        plain => (plain.clone(), plain),
+                        plain => (nbe_eval(&u), nbe_eval(&v)),
                     };
-                    check(ctx, x, &x_ty)?;
+                    check_dt(dts, ctx, x, &x_ty)?;
                     Ok(ret_ty)
                 }
                 other => Err(TypeError::ExpectedPath(other)),
@@ -674,31 +707,72 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
         Term::TGlue(a_ty, phi, te) => {
             let n = type_level_dt(dts, ctx, a_ty)?;
             let a_ty_ = nbe_eval(a_ty);
-            check_interval(ctx, phi)?;
-            let te_ty = infer(ctx, te)?;
-            let m = match nbe_eval(&te_ty) {
-                Term::TUniv(k) => k,
-                Term::TEquiv(a, b) => {
-                    let a_ = nbe_eval(&a);
-                    let b_ = nbe_eval(&b);
-                    require_equal(ctx, &b_, &a_ty_)?;
-                    let p = type_level_dt(dts, ctx, &a_)?;
-                    let q = type_level_dt(dts, ctx, &b_)?;
-                    p.max(q)
+            check_interval_dt(dts, ctx, phi)?;
+            let m = match te.as_ref() {
+                // te = (A, e) : Σ(X : U). Equiv X a_ty_
+                Term::TPair(te_a, _) => {
+                    let sigma = Term::TSigma(
+                        "X".to_string(),
+                        Box::new(Term::TUniv(n)),
+                        Box::new(Term::TEquiv(
+                            Box::new(Term::TVar(0)),
+                            Box::new(shift(1, 0, &a_ty_)),
+                        )),
+                    );
+                    check_dt(dts, ctx, te, &sigma)?;
+                    type_level_dt(dts, ctx, te_a)?
                 }
-                Term::TMkEquiv(a, b, _, _, _, _) => {
-                    let a_ = nbe_eval(&a);
-                    let b_ = nbe_eval(&b);
-                    require_equal(ctx, &b_, &a_ty_)?;
-                    let p = type_level_dt(dts, ctx, &a_)?;
-                    let q = type_level_dt(dts, ctx, &b_)?;
-                    p.max(q)
+                // te = λ_. (A, e) — strip the lambda and check the body
+                Term::TAbs(_, body) => {
+                    let body_stripped = beta(body, &Term::TInterval(I::I1));
+                    match &body_stripped {
+                        Term::TPair(te_a, _) => {
+                            let sigma = Term::TSigma(
+                                "X".to_string(),
+                                Box::new(Term::TUniv(n)),
+                                Box::new(Term::TEquiv(
+                                    Box::new(Term::TVar(0)),
+                                    Box::new(shift(1, 0, &a_ty_)),
+                                )),
+                            );
+                            check_dt(dts, ctx, &body_stripped, &sigma)?;
+                            type_level_dt(dts, ctx, te_a)?
+                        }
+                        other => {
+                            return Err(TypeError::Other(format!(
+                                "Glue: expected the lambda body to be a pair (type, equiv), got: {}",
+                                other
+                            )));
+                        }
+                    }
                 }
-                other => {
-                    return Err(TypeError::Other(format!(
-                        "Glue: equivalence argument has unexpected type: {}",
-                        other
-                    )));
+                _ => {
+                    let te_ty = infer_dt(dts, ctx, te)?;
+                    match nbe_eval(&te_ty) {
+                        Term::TUniv(k) => k,
+                        Term::TEquiv(a, b) => {
+                            let a_ = nbe_eval(&a);
+                            let b_ = nbe_eval(&b);
+                            require_equal(ctx, &b_, &a_ty_)?;
+                            let p = type_level_dt(dts, ctx, &a_)?;
+                            let q = type_level_dt(dts, ctx, &b_)?;
+                            p.max(q)
+                        }
+                        Term::TMkEquiv(a, b, _, _, _, _) => {
+                            let a_ = nbe_eval(&a);
+                            let b_ = nbe_eval(&b);
+                            require_equal(ctx, &b_, &a_ty_)?;
+                            let p = type_level_dt(dts, ctx, &a_)?;
+                            let q = type_level_dt(dts, ctx, &b_)?;
+                            p.max(q)
+                        }
+                        other => {
+                            return Err(TypeError::Other(format!(
+                                "Glue: equivalence argument has unexpected type: {}",
+                                other
+                            )));
+                        }
+                    }
                 }
             };
             Ok(Term::TUniv(n.max(m)))
@@ -706,14 +780,14 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
 
         // unglue phi te g
         Term::TUnglue(phi, te, g) => {
-            check_interval(ctx, phi)?;
+            check_interval_dt(dts, ctx, phi)?;
             let phi_ = nbe_eval(phi);
             if is_top_dnf(&phi_) {
-                infer(ctx, &Term::TEquivFwd(te.clone(), g.clone()))
+                infer_dt(dts, ctx, &Term::TEquivFwd(te.clone(), g.clone()))
             } else if is_bot_dnf(&phi_) {
-                infer(ctx, g)
+                infer_dt(dts, ctx, g)
             } else {
-                let g_ty = infer(ctx, g)?;
+                let g_ty = infer_dt(dts, ctx, g)?;
                 match nbe_eval(&g_ty) {
                     Term::TGlue(a_ty, _, _) => Ok(nbe_eval(&a_ty)),
                     other => Err(TypeError::Other(format!(
@@ -728,9 +802,9 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
         t @ Term::TGlueElem(phi, elm, a) => {
             let phi_ = nbe_eval(phi);
             if is_top_dnf(&phi_) {
-                infer(ctx, elm)
+                infer_dt(dts, ctx, elm)
             } else if is_bot_dnf(&phi_) {
-                infer(ctx, a)
+                infer_dt(dts, ctx, a)
             } else {
                 Err(TypeError::CannotInfer(t.clone()))
             }
@@ -745,21 +819,21 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
         }
 
         // fst p : A   where  p : Σ(x:A).B
-        Term::TFst(p) => match infer(ctx, p) {
+        Term::TFst(p) => match infer_dt(dts, ctx, p) {
             Ok(p_ty) => match nbe_eval(&p_ty) {
                 Term::TSigma(_, a_ty, _) => Ok(nbe_eval(&a_ty)),
                 other => Err(TypeError::ExpectedSigma(other)),
             },
-            Err(e) => infer_via_reduction(ctx, t, e),
+            Err(e) => infer_via_reduction(dts, ctx, t, e),
         },
 
         // snd p : B[fst p / x]   where  p : Σ(x:A).B
-        Term::TSnd(p) => match infer(ctx, p) {
+        Term::TSnd(p) => match infer_dt(dts, ctx, p) {
             Ok(p_ty) => match nbe_eval(&p_ty) {
                 Term::TSigma(_, _, b_ty) => Ok(nbe_eval(&beta(&b_ty, &Term::TFst(p.clone())))),
                 other => Err(TypeError::ExpectedSigma(other)),
             },
-            Err(e) => infer_via_reduction(ctx, t, e),
+            Err(e) => infer_via_reduction(dts, ctx, t, e),
         },
 
         // Pairs cannot be inferred without annotation
@@ -769,8 +843,8 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
         Term::THComp(a_ty, phi, tube, base) => {
             type_level_dt(dts, ctx, a_ty)?;
             let a_ty_ = nbe_eval(a_ty);
-            check_interval(ctx, phi)?;
-            check(ctx, base, &a_ty_)?;
+            check_interval_dt(dts, ctx, phi)?;
+            check_dt(dts, ctx, base, &a_ty_)?;
 
             let phi_ = nbe_eval(phi);
             match nbe_eval(tube) {
@@ -778,14 +852,14 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                     // (a) body : A in extended context
                     let ctx2 = extend_ctx(i.clone(), interval_ty(), ctx);
                     let a_ty_s = shift(1, 0, &a_ty_);
-                    check(&ctx2, &body, &a_ty_s)?;
+                    check_dt(dts, &ctx2, &body, &a_ty_s)?;
                     // (b) tube@0 ≡ base on each face of phi
                     let tube_at0 = nbe_eval(&beta(&body, &Term::TInterval(I::I0)));
                     check_faces(ctx, &phi_, &tube_at0, &nbe_eval(base))?;
                 }
                 tube_ => {
                     // Non-lambda tube: treat as Path A u v
-                    let tube_ty = infer(ctx, &tube_)?;
+                    let tube_ty = infer_dt(dts, ctx, &tube_)?;
                     match nbe_eval(&tube_ty) {
                         Term::TPath(a, u, v) => {
                             if !definitionally_equal_ctx_r(ctx, &nbe_eval(&a), &a_ty_).is_equal() {
@@ -794,8 +868,8 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                                     nbe_eval(&a),
                                 ));
                             }
-                            check(ctx, &nbe_eval(&u), &a_ty_)?;
-                            check(ctx, &nbe_eval(&v), &a_ty_)?;
+                            check_dt(dts, ctx, &nbe_eval(&u), &a_ty_)?;
+                            check_dt(dts, ctx, &nbe_eval(&v), &a_ty_)?;
                             check_faces(ctx, &phi_, &nbe_eval(&u), &nbe_eval(base))?;
                         }
                         other => return Err(TypeError::ExpectedPath(other)),
@@ -935,18 +1009,11 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 .iter()
                 .rev()
                 .fold(sig.face1.clone(), |ty, a| beta(&ty, a));
-            // The path family must be a PLam over the interval variable so that
-            // the type is well-formed as Path (λ_. TData(d)) face0 face1.
-            // For non-parameterized HITs TData(d) is constant, but using PLam
-            // keeps the form correct and would generalise to parameterized types.
-            Ok(Term::TPath(
-                Box::new(Term::PLam(
-                    "_".into(),
-                    Box::new(Term::TData(d.clone())),
-                )),
-                Box::new(nbe_eval(&face0)),
-                Box::new(nbe_eval(&face1)),
-            ))
+            // TPCon(d, pc, args, r) is the path constructor applied at interval
+            // position r — it is a POINT of TData(d), not a path.  At the
+            // endpoints r=I0 / r=I1 it reduces to face0 / face1 respectively
+            // (handled by reduce_pcon_endpoints_dt in check_dt).
+            Ok(Term::TData(d.clone()))
         }
 
         // TElim(motive, cases, scrut)
@@ -1144,31 +1211,38 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                     ord_var.clone(),
                     Box::new(Term::TInterval(I::I1)),
                 ));
-                let u = nbe_eval(&Term::TApp(
-                    Box::new(motive_shifted.clone()),
-                    Box::new(face0_term),
-                ));
-                let v = nbe_eval(&Term::TApp(Box::new(motive_shifted), Box::new(face1_term)));
-
-                let expected_body_ty = Term::TPath(
-                    Box::new(Term::PLam(i_name.clone(), Box::new(motive_at_pcon))),
-                    Box::new(u),
-                    Box::new(v),
-                );
-                check_dt(dts, &case_ctx, &case.body, &expected_body_ty)?;
-
-                let body_at0 = nbe_eval(&Term::PApp(
-                    case.body.clone(),
-                    Box::new(Term::TInterval(I::I0)),
-                ));
-                let body_at1 = nbe_eval(&Term::PApp(
-                    case.body.clone(),
-                    Box::new(Term::TInterval(I::I1)),
-                ));
                 let face0_case =
                     eval_elim_face(motive, cases, &pcon_sig.face0, &ord_var_no_i, arity as i32);
                 let face1_case =
                     eval_elim_face(motive, cases, &pcon_sig.face1, &ord_var_no_i, arity as i32);
+
+                let expected_body_ty = Term::TPath(
+                    Box::new(Term::PLam(i_name.clone(), Box::new(motive_at_pcon))),
+                    Box::new(face0_case.clone()),
+                    Box::new(face1_case.clone()),
+                );
+                check_dt(dts, &case_ctx, &case.body, &expected_body_ty)?;
+
+                 let body_at0 = match case.body.as_ref() {
+                    Term::PLam(_, inner) => shift(-1, 0, &reduce_pcon_endpoints_dt(
+                        dts,
+                        &apply_literal(&Literal::NegVar(0), inner),
+                    )),
+                    _ => nbe_eval(&Term::PApp(
+                        case.body.clone(),
+                        Box::new(Term::TInterval(I::I0)),
+                    )),
+                };
+                let body_at1 = match case.body.as_ref() {
+                    Term::PLam(_, inner) => shift(-1, 0, &reduce_pcon_endpoints_dt(
+                        dts,
+                        &apply_literal(&Literal::Pos(0), inner),
+                    )),
+                    _ => nbe_eval(&Term::PApp(
+                        case.body.clone(),
+                        Box::new(Term::TInterval(I::I1)),
+                    )),
+                };
                 require_equal_endpt(&ord_case_ctx, &face0_case, &body_at0)?;
                 require_equal_endpt(&ord_case_ctx, &face1_case, &body_at1)?;
             }
@@ -1181,6 +1255,65 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
         }
     }
 }
+
+// HIT endpoint reduction (datatype-aware)
+// ---------------------------------------------------------------------------
+/// Reduce `TPCon(d, pc, args, r)` at endpoints `r=I0`/`r=I1` to the
+/// corresponding declared face value, recursively.  This is needed because
+/// `nbe_eval` doesn't carry datatype definitions, so it cannot reduce path
+/// constructors at their boundaries without this extra pass.
+fn reduce_pcon_endpoints_dt(dts: &[Datatype], t: &Term) -> Term {
+    let t = nbe_eval(t);
+    match &t {
+        Term::TPCon(d, pc, args, r) => {
+            let r_nf = nbe_eval(r);
+            let (is_i0, is_i1) = match &r_nf {
+                Term::TInterval(i) => {
+                    let dnf = crate::cubical::interval::eval_interval(i);
+                    (dnf == crate::cubical::interval::dnf_bot(), dnf == crate::cubical::interval::dnf_top())
+                }
+                Term::TCube(d) => {
+                    (d == &crate::cubical::interval::dnf_bot(), d == &crate::cubical::interval::dnf_top())
+                }
+                _ => (false, false),
+            };
+            if is_i0 || is_i1 {
+                // Look up the face value from the PConSig.
+                if let Some(dt) = dts.iter().find(|dt| &dt.name == d) {
+                    if let Some(sig) = dt.find_pcon(pc) {
+                        // face0/face1 are in a scope of sig.arity() ordinary args.
+                        // Substitute the checked args into the face term.
+                        let reduced_args: Vec<Term> =
+                            args.iter().map(|a| reduce_pcon_endpoints_dt(dts, a)).collect();
+                        let face = if is_i0 { &sig.face0 } else { &sig.face1 };
+                        let face_inst = reduced_args
+                            .iter()
+                            .rev()
+                            .fold(face.clone(), |acc, a| beta(&acc, a));
+                        return reduce_pcon_endpoints_dt(dts, &nbe_eval(&face_inst));
+                    }
+                }
+            }
+            // Not at an endpoint (or datatype not found): reduce sub-terms.
+            let reduced_args: Vec<Term> =
+                args.iter().map(|a| reduce_pcon_endpoints_dt(dts, a)).collect();
+            nbe_eval(&Term::TPCon(
+                d.clone(),
+                pc.clone(),
+                reduced_args,
+                Box::new(r_nf),
+            ))
+        }
+        // Recurse into PApp so that e.g. `pcon @ (~ i0)` reduces too.
+        Term::PApp(p, r) => {
+            let p2 = reduce_pcon_endpoints_dt(dts, p);
+            let r2 = nbe_eval(r);
+            nbe_eval(&Term::PApp(Box::new(p2), Box::new(r2)))
+        }
+        _ => t,
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Type Checking
@@ -1224,34 +1357,74 @@ pub fn check_dt(dts: &[Datatype], ctx: &Ctx, t: &Term, ty: &Term) -> Result<(), 
             };
             let ctx2 = extend_ctx(i.clone(), interval_ty(), ctx);
             let body_ty = match nbe_eval(&a_ty) {
-                p @ Term::PLam { .. } => p,
+                // a_ty is a type family (PLam): apply it to the freshly-bound
+                // interval variable TVar(0) to get the body's type.
+                Term::PLam(_, b) => nbe_eval(&beta(&b, &Term::TVar(0))),
+                // a_ty is a constant type: shift it into the extended context.
                 plain => shift(1, 0, &plain),
             };
-            let body_at0 = nbe_eval(&beta(body, &Term::TInterval(I::I0)));
-            let body_at1 = nbe_eval(&beta(body, &Term::TInterval(I::I1)));
+                        // Instantiate the interval binder at each endpoint by substituting
+            // IVar(0) → I0 / I1 via apply_literal (beta would substitute TVar(0),
+            // not the interval variable IVar(0) used inside a PLam body).
+            let body_at0 = shift(-1, 0, &reduce_pcon_endpoints_dt(
+                dts,
+                &apply_literal(&Literal::NegVar(0), body),
+            ));
+            let body_at1 = shift(-1, 0, &reduce_pcon_endpoints_dt(
+                dts,
+                &apply_literal(&Literal::Pos(0), body),
+            ));
             require_equal_endpt(ctx, &nbe_eval(&u), &body_at0)?;
             require_equal_endpt(ctx, &nbe_eval(&v), &body_at1)?;
             check_dt(dts, &ctx2, body, &body_ty)
         }
 
         // GlueElem checking
-        Term::TGlueElem(phi, t_inner, a) => match nbe_eval(ty) {
+        Term::TGlueElem(phi, t_inner, a) => {
+            // Try to use the type as-is first (preserves Glue structure from
+            // the annotation). Fall back to nbe_eval for neutral Glue types.
+            let glue = match ty {
+                Term::TGlue(_, _, _) => ty,
+                _ => &nbe_eval(ty),
+            };
+            match glue {
             Term::TGlue(a_ty, phi_, te) => {
                 check_interval(ctx, phi)?;
                 require_equal(ctx, &nbe_eval(&phi_), &nbe_eval(phi))?;
                 let t_ty = match nbe_eval(&te) {
                     Term::TMkEquiv(dom_a, _, _, _, _, _) => nbe_eval(&dom_a),
                     Term::TEquiv(dom_a, _) => nbe_eval(&dom_a),
+                    Term::TPair(te_a, _) => nbe_eval(&te_a),
+                    Term::TAbs(_, body) => {
+                        let body_at_1 = beta(&body, &Term::TInterval(I::I1));
+                        match body_at_1 {
+                            Term::TPair(ref te_a, _) => nbe_eval(te_a),
+                            other => other,
+                        }
+                    }
                     other => other,
                 };
-                check_dt(dts, ctx, t_inner, &t_ty)?;
+                // The cap may be a trivial path (lambda over the interval) or a
+                // direct element — handle both by wrapping in I -> dom_ty when
+                // the cap is syntactically a lambda.
+                let cap_ty = match &**t_inner {
+                    Term::TAbs(_, _) => {
+                        // Shift t_ty up by 1 because the TPi binder will be
+                        // pushed into the context during checking.
+                        let shifted_t_ty = shift(1, 0, &t_ty);
+                        Term::TPi("_".into(), Box::new(Term::TIntervalTy), Box::new(shifted_t_ty))
+                    }
+                    _ => t_ty.clone(),
+                };
+                check_dt(dts, ctx, t_inner, &cap_ty)?;
                 check_dt(dts, ctx, a, &nbe_eval(&a_ty))
             }
             other => Err(TypeError::Other(format!(
                 "glue: expected Glue type, got: {}",
                 other
             ))),
-        },
+            }
+        }
 
         // Pair introduction
         Term::TPair(a, b) => {

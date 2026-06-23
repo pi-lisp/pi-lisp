@@ -295,9 +295,7 @@ impl Heap {
                 // Key exists — take a mutable borrow and update in place.
                 // `get_mut` is safe here because we just confirmed the handle
                 // is valid via `get` one line above.
-                self.get_mut(current)
-                    .vars
-                    .insert(name.to_string(), val);
+                self.get_mut(current).vars.insert(name.to_string(), val);
                 return Ok(());
             }
             let parent = self.get(current).parent;
@@ -335,7 +333,10 @@ impl Heap {
     /// temporary `Vec<GcHandle>` first.
     pub fn mark(&mut self, roots: &[GcHandle]) {
         // Reuse the persistent mark_stack buffer (capacity is retained).
-        debug_assert!(self.mark_stack.is_empty(), "mark_stack was not cleared after last cycle");
+        debug_assert!(
+            self.mark_stack.is_empty(),
+            "mark_stack was not cleared after last cycle"
+        );
         self.mark_stack.extend_from_slice(roots);
 
         while let Some(h) = self.mark_stack.pop() {

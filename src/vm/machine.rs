@@ -57,7 +57,7 @@ use std::rc::Rc;
 
 use crate::expr::{Expr, env_get, env_set, new_env};
 use crate::gc::{GcHandle, Heap};
-use crate::vm::bytecode::{Chunk, Op, Value, value_to_expr, expr_to_value};
+use crate::vm::bytecode::{Chunk, Op, Value, expr_to_value, value_to_expr};
 
 // ── Value extension: Builtin + Closure ───────────────────────────────────────
 //
@@ -105,7 +105,9 @@ impl std::fmt::Debug for VmValue {
             VmValue::List(items) => {
                 write!(f, "(")?;
                 for (i, v) in items.iter().enumerate() {
-                    if i > 0 { write!(f, " ")?; }
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
                     write!(f, "{:?}", v)?;
                 }
                 write!(f, ")")
@@ -126,7 +128,12 @@ fn from_value(v: Value) -> VmValue {
         Value::List(items) => VmValue::List(items.into_iter().map(from_value).collect()),
         Value::Nil => VmValue::Nil,
         Value::Builtin(f) => VmValue::Builtin(f),
-        Value::Closure { params, body_chunk, body_expr, env } => VmValue::Closure {
+        Value::Closure {
+            params,
+            body_chunk,
+            body_expr,
+            env,
+        } => VmValue::Closure {
             chunk: body_chunk,
             params,
             body_expr,
@@ -147,7 +154,12 @@ fn into_value(v: VmValue) -> Result<Value, String> {
         }
         VmValue::Nil => Ok(Value::Nil),
         VmValue::Builtin(f) => Ok(Value::Builtin(f)),
-        VmValue::Closure { chunk, params, body_expr, env } => Ok(Value::Closure {
+        VmValue::Closure {
+            chunk,
+            params,
+            body_expr,
+            env,
+        } => Ok(Value::Closure {
             params,
             body_chunk: chunk,
             body_expr,
@@ -160,9 +172,12 @@ fn into_value(v: VmValue) -> Result<Value, String> {
 pub(crate) fn vm_value_to_expr(v: VmValue, _heap: &mut Heap) -> Result<Expr, String> {
     match v {
         VmValue::Builtin(f) => Ok(Expr::Func(f)),
-        VmValue::Closure { params, body_expr, env, .. } => {
-            Ok(Expr::Lambda(params, body_expr, env))
-        }
+        VmValue::Closure {
+            params,
+            body_expr,
+            env,
+            ..
+        } => Ok(Expr::Lambda(params, body_expr, env)),
         other => {
             let v = into_value(other)?;
             Ok(value_to_expr(v))
@@ -183,25 +198,26 @@ pub(crate) fn expr_to_vm_value(expr: &Expr, heap: &mut Heap) -> Result<VmValue, 
             }
             Ok(VmValue::List(vs))
         }
-        Expr::Func(f) => {
-            Ok(VmValue::Builtin(Rc::clone(f)))
-        }
+        Expr::Func(f) => Ok(VmValue::Builtin(Rc::clone(f))),
         Expr::Lambda(params, body_expr, captured_env) => {
             let key = crate::vm::cache::CompileCache::key(body_expr);
-            let chunk = crate::vm::CACHE.with(|c| c.borrow().get_chunk(&key).cloned())
+            let chunk = crate::vm::CACHE
+                .with(|c| c.borrow().get_chunk(&key).cloned())
                 .unwrap_or_else(|| {
                     if !crate::vm::compiler::is_compilable(body_expr, heap, *captured_env) {
                         let mut c = Chunk::new();
                         c.emit(Op::TreeEval((**body_expr).clone()));
                         return c;
                     }
-                    let chunk = crate::vm::compiler::Compiler::compile(body_expr, *captured_env, heap)
-                        .unwrap_or_else(|_| {
-                            let mut c = Chunk::new();
-                            c.emit(Op::TreeEval((**body_expr).clone()));
-                            c
-                        });
-                    crate::vm::CACHE.with(|c| c.borrow_mut().insert_chunk(key.clone(), chunk.clone()));
+                    let chunk =
+                        crate::vm::compiler::Compiler::compile(body_expr, *captured_env, heap)
+                            .unwrap_or_else(|_| {
+                                let mut c = Chunk::new();
+                                c.emit(Op::TreeEval((**body_expr).clone()));
+                                c
+                            });
+                    crate::vm::CACHE
+                        .with(|c| c.borrow_mut().insert_chunk(key.clone(), chunk.clone()));
                     chunk
                 });
             Ok(VmValue::Closure {
@@ -376,7 +392,11 @@ impl<'h> VM<'h> {
                 }
 
                 // ── MakeFunc ─────────────────────────────────────────────────
-                Op::MakeFunc { code_offset, params, body_expr } => {
+                Op::MakeFunc {
+                    code_offset,
+                    params,
+                    body_expr,
+                } => {
                     let env = self.frames[frame_idx].env;
                     // Clone the sub-chunk out of the current chunk.
                     let sub_chunk = {
@@ -411,7 +431,9 @@ impl<'h> VM<'h> {
                             items.insert(0, item);
                             self.stack.push(VmValue::List(items));
                         }
-                        other => return Err(format!("PrependList: expected list, got {:?}", other)),
+                        other => {
+                            return Err(format!("PrependList: expected list, got {:?}", other));
+                        }
                     }
                 }
 
@@ -424,7 +446,12 @@ impl<'h> VM<'h> {
                             s.extend(a);
                             self.stack.push(VmValue::List(s));
                         }
-                        other => return Err(format!("AppendSplice: expected two lists, got {:?}", other)),
+                        other => {
+                            return Err(format!(
+                                "AppendSplice: expected two lists, got {:?}",
+                                other
+                            ));
+                        }
                     }
                 }
 
@@ -432,7 +459,6 @@ impl<'h> VM<'h> {
                 Op::LoadNil => {
                     self.stack.push(VmValue::List(vec![]));
                 }
-
 
                 // ── PushEnv ──────────────────────────────────────────────────
                 Op::PushEnv => {
@@ -445,8 +471,9 @@ impl<'h> VM<'h> {
                 Op::PopEnv => {
                     let current = self.frames[frame_idx].env;
                     // Retrieve the parent handle stored by new_env.
-                    let parent = self.heap.parent_of(current)
-                        .ok_or_else(|| "VM PopEnv: no parent environment (already at root)".to_string())?;
+                    let parent = self.heap.parent_of(current).ok_or_else(|| {
+                        "VM PopEnv: no parent environment (already at root)".to_string()
+                    })?;
                     self.frames[frame_idx].env = parent;
                 }
 
@@ -480,9 +507,8 @@ impl<'h> VM<'h> {
                 Op::TreeEval(expr) => {
                     let env = self.frames[frame_idx].env;
                     let result = crate::eval::eval_tree(&expr, env, self.heap)?;
-                    let val = expr_to_vm_value(&result, self.heap)
-                        .unwrap_or(VmValue::List(vec![]));
-                    
+                    let val = expr_to_vm_value(&result, self.heap).unwrap_or(VmValue::List(vec![]));
+
                     if self.frames.len() == 1 {
                         return Ok(val);
                     }
@@ -498,14 +524,21 @@ impl<'h> VM<'h> {
 
     /// Pop the top value from the stack.
     fn pop(&mut self) -> Result<VmValue, String> {
-        self.stack.pop().ok_or_else(|| "VM: stack underflow".to_string())
+        self.stack
+            .pop()
+            .ok_or_else(|| "VM: stack underflow".to_string())
     }
 
     /// Convert a `VmValue` to an `Expr` for storage in the GC heap.
     fn vm_value_to_expr_inner(&self, v: VmValue) -> Result<Expr, String> {
         match v {
             VmValue::Builtin(_) => Err("cannot store Builtin in environment".into()),
-            VmValue::Closure { chunk: _, params, body_expr, env } => {
+            VmValue::Closure {
+                chunk: _,
+                params,
+                body_expr,
+                env,
+            } => {
                 // Represent as a Lambda with the stored body expression.
                 Ok(Expr::Lambda(params, body_expr, env))
             }
@@ -558,7 +591,12 @@ impl<'h> VM<'h> {
                 Ok(())
             }
 
-            VmValue::Closure { chunk, params, body_expr: _, env: closure_env } => {
+            VmValue::Closure {
+                chunk,
+                params,
+                body_expr: _,
+                env: closure_env,
+            } => {
                 let n_params = params.len();
                 if n_args != n_params {
                     return Err(format!(
@@ -619,7 +657,10 @@ impl<'h> VM<'h> {
     }
 
     #[cfg(all(feature = "jit", target_arch = "x86_64"))]
-    fn run_jit(&mut self, fp: unsafe extern "C" fn(*mut crate::vm::jit_abi::JitFrame)) -> Result<VmValue, String> {
+    fn run_jit(
+        &mut self,
+        fp: unsafe extern "C" fn(*mut crate::vm::jit_abi::JitFrame),
+    ) -> Result<VmValue, String> {
         let mut frame = crate::vm::jit_abi::JitFrame::new(self);
         unsafe { fp(&mut frame) };
         frame.into_vm_value()

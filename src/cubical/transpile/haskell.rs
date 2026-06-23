@@ -72,7 +72,11 @@ pub fn emit_module(ctx: &mut HaskellModuleCtx, decls: &[Decl], source_comment: &
         out.push_str("import Cubical.Prelude\n");
     }
 
-    let mut import_lines: Vec<String> = ctx.imports.iter().map(|m| format!("import {}", m)).collect();
+    let mut import_lines: Vec<String> = ctx
+        .imports
+        .iter()
+        .map(|m| format!("import {}", m))
+        .collect();
     import_lines.sort();
     import_lines.dedup();
     for line in import_lines {
@@ -230,7 +234,14 @@ fn walk_term(term: &Term, ctx: &mut HaskellModuleCtx) {
             prescan_term(u0, ctx);
         }
         Term::TMkEquiv(a, b, f, g, eta, eps) => {
-            for t in [a.as_ref(), b.as_ref(), f.as_ref(), g.as_ref(), eta.as_ref(), eps.as_ref()] {
+            for t in [
+                a.as_ref(),
+                b.as_ref(),
+                f.as_ref(),
+                g.as_ref(),
+                eta.as_ref(),
+                eps.as_ref(),
+            ] {
                 prescan_term(t, ctx);
             }
         }
@@ -414,7 +425,11 @@ pub fn emit_type_erased(ty: &Term, env: &[Name], ctx: &mut HaskellModuleCtx) -> 
                 emit_term(te, env, ctx)
             )
         }
-        Term::TApp(f, a) => format!("{} {}", emit_type_erased(f, env, ctx), emit_term(a, env, ctx)),
+        Term::TApp(f, a) => format!(
+            "{} {}",
+            emit_type_erased(f, env, ctx),
+            emit_term(a, env, ctx)
+        ),
         Term::TVar(i) => env
             .get(*i as usize)
             .cloned()
@@ -512,7 +527,11 @@ pub fn emit_term(term: &Term, env: &[Name], ctx: &mut HaskellModuleCtx) -> Strin
         }
         Term::TEquivFwd(e, x) => {
             ctx.uses_cubical = true;
-            format!("equivFwd {} {}", emit_term(e, env, ctx), emit_term(x, env, ctx))
+            format!(
+                "equivFwd {} {}",
+                emit_term(e, env, ctx),
+                emit_term(x, env, ctx)
+            )
         }
         Term::TUa(e) => {
             ctx.uses_cubical = true;
@@ -520,7 +539,11 @@ pub fn emit_term(term: &Term, env: &[Name], ctx: &mut HaskellModuleCtx) -> Strin
         }
         Term::TTransport(p, x) => {
             ctx.uses_cubical = true;
-            format!("transport {} {}", emit_term(p, env, ctx), emit_term(x, env, ctx))
+            format!(
+                "transport {} {}",
+                emit_term(p, env, ctx),
+                emit_term(x, env, ctx)
+            )
         }
         Term::TGlue(a, phi, te) => {
             ctx.uses_cubical = true;
@@ -597,11 +620,7 @@ fn emit_elim(cases: &[ElimCase], scrut: &Term, env: &[Name], ctx: &mut HaskellMo
         let mut env2 = case.binders.clone();
         env2.reverse();
         env2.extend_from_slice(env);
-        arms.push(format!(
-            "{} -> {}",
-            pat,
-            emit_term(&case.body, &env2, ctx)
-        ));
+        arms.push(format!("{} -> {}", pat, emit_term(&case.body, &env2, ctx)));
     }
     format!(
         "(case {} of\n  {})",
@@ -668,10 +687,13 @@ fn emit_cube(cube: &std::collections::BTreeSet<Literal>) -> String {
     if cube.is_empty() {
         "i1".to_string()
     } else {
-        let lits: Vec<String> = cube.iter().map(|l| match l {
-            Literal::Pos(n) => format!("i{}", n),
-            Literal::NegVar(n) => format!("~i{}", n),
-        }).collect();
+        let lits: Vec<String> = cube
+            .iter()
+            .map(|l| match l {
+                Literal::Pos(n) => format!("i{}", n),
+                Literal::NegVar(n) => format!("~i{}", n),
+            })
+            .collect();
         format!("({})", lits.join(" /\\ "))
     }
 }
@@ -681,8 +703,12 @@ fn term_mentions_var(term: &Term, var: i32) -> bool {
         Term::TVar(i) => *i == var,
         Term::TApp(f, a) => term_mentions_var(f, var) || term_mentions_var(a, var),
         Term::TAbs(_, b) => term_mentions_var(b, var.saturating_sub(1)),
-        Term::TPi(_, a, b) => term_mentions_var(a, var) || term_mentions_var(b, var.saturating_sub(1)),
-        Term::TSigma(_, a, b) => term_mentions_var(a, var) || term_mentions_var(b, var.saturating_sub(1)),
+        Term::TPi(_, a, b) => {
+            term_mentions_var(a, var) || term_mentions_var(b, var.saturating_sub(1))
+        }
+        Term::TSigma(_, a, b) => {
+            term_mentions_var(a, var) || term_mentions_var(b, var.saturating_sub(1))
+        }
         Term::TPath(a, u, v) => {
             term_mentions_var(a, var) || term_mentions_var(u, var) || term_mentions_var(v, var)
         }
@@ -796,7 +822,8 @@ pub fn emit_main_driver(
     datatype_info: &HashMap<Name, DatatypeInfo>,
     uses_cubical: bool,
 ) -> String {
-    let (call_expr, extra_imports) = emit_entry_call(entry_module, entry_name, entry_ty, datatype_info);
+    let (call_expr, extra_imports) =
+        emit_entry_call(entry_module, entry_name, entry_ty, datatype_info);
 
     let mut imports: Vec<String> = extra_imports;
     if entry_module != "Main" && entry_module != "MainLib" {
@@ -853,10 +880,12 @@ fn demo_value(ty: &Term, datatype_info: &HashMap<Name, DatatypeInfo>) -> (String
         if name == "Nat" {
             return (
                 "(Suc (Suc Zero))".to_string(),
-                vec![datatype_info
-                    .get(name)
-                    .map(|i| i.module_name.clone())
-                    .unwrap_or_else(|| "Nat".to_string())],
+                vec![
+                    datatype_info
+                        .get(name)
+                        .map(|i| i.module_name.clone())
+                        .unwrap_or_else(|| "Nat".to_string()),
+                ],
             );
         }
         if let Some(info) = datatype_info.get(name) {
@@ -884,7 +913,11 @@ mod tests {
         let src = "data Nat = | zero : Nat | suc : Nat -> Nat\n";
         let decls = parse_program(src).unwrap();
         let ctx = HaskellModuleCtx::from_decls("Nat".to_string(), &decls);
-        let out = emit_module(&mut HaskellModuleCtx::from_decls("Nat".to_string(), &decls), &decls, "Nat.uwuc");
+        let out = emit_module(
+            &mut HaskellModuleCtx::from_decls("Nat".to_string(), &decls),
+            &decls,
+            "Nat.uwuc",
+        );
         assert!(out.contains("data Nat = Zero"));
         assert!(out.contains("Suc Nat"));
         let _ = ctx;

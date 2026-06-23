@@ -146,9 +146,14 @@ pub fn reduce_papp_by_type(ctx: &Ctx, p: &Term, r: &Term) -> Option<Term> {
     match infer_ty(ctx, p) {
         Some(Term::TPath(_, u, v)) => {
             let r_ = nbe_eval(r);
-            if is_bot_dnf(&r_) || r_ == Term::TInterval(I::I0) {
+            let d = match &r_ {
+                Term::TCube(d) => d.clone(),
+                Term::TInterval(i) => crate::cubical::interval::eval_interval(i),
+                _ => return None,
+            };
+            if d == crate::cubical::interval::dnf_bot() {
                 Some(nbe_eval(&u))
-            } else if is_top_dnf(&r_) || r_ == Term::TInterval(I::I1) {
+            } else if d == crate::cubical::interval::dnf_top() {
                 Some(nbe_eval(&v))
             } else {
                 None

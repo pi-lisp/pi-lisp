@@ -219,7 +219,9 @@ impl Parser {
             let binder = self.expect_ident("expected interval binder after '<'")?;
             self.expect(TokenKind::RAngle, "expected '>' after interval binder")?;
             self.ivar_env.insert(0, binder.clone());
+            self.term_env.insert(0, "".to_string());
             let body = self.parse_term()?;
+            self.term_env.remove(0);
             self.ivar_env.remove(0);
             return Ok(Term::PLam(binder, Box::new(body)));
         }
@@ -483,24 +485,45 @@ impl Parser {
 
     fn parse_paren(&mut self) -> Result<Term, ParseError> {
         self.expect(TokenKind::LParen, "expected '('")?;
-        if let Some(name) = self.try_parse_binder_header()? {
+        if let Some((names, ty)) = self.try_parse_binder_header()? {
             self.expect(TokenKind::RParen, "unmatched '('")?;
             if self.consume(&TokenKind::Arrow) {
-                // (x : T) -> body  — dependent Pi; body is an arrow-level term
-                self.term_env.insert(0, name.0.clone());
+                // (x y : T) -> body  — dependent Pi; body is an arrow-level term
+                for name in &names {
+                    self.term_env.insert(0, name.clone());
+                }
                 let body = self.parse_arrow()?;
-                self.term_env.remove(0);
-                return Ok(Term::TPi(name.0, Box::new(name.1), Box::new(body)));
+                for _ in &names {
+                    self.term_env.remove(0);
+                }
+                let mut term = body;
+                for (idx, name) in names.into_iter().enumerate().rev() {
+                    let shifted_ty = crate::cubical::syntax::shift(idx as i32, 0, &ty);
+                    term = Term::TPi(name, Box::new(shifted_ty), Box::new(term));
+                }
+                return Ok(term);
             }
             if self.consume(&TokenKind::Star) {
-                // (x : T) * body  — dependent Sigma; body is a sigma-level term
-                // (does NOT swallow a following `->`, since `->` binds more loosely)
-                self.term_env.insert(0, name.0.clone());
+                // (x y : T) * body  — dependent Sigma; body is a sigma-level term
+                for name in &names {
+                    self.term_env.insert(0, name.clone());
+                }
                 let body = self.parse_sigma()?;
-                self.term_env.remove(0);
-                return Ok(Term::TSigma(name.0, Box::new(name.1), Box::new(body)));
+                for _ in &names {
+                    self.term_env.remove(0);
+                }
+                let mut term = body;
+                for (idx, name) in names.into_iter().enumerate().rev() {
+                    let shifted_ty = crate::cubical::syntax::shift(idx as i32, 0, &ty);
+                    term = Term::TSigma(name, Box::new(shifted_ty), Box::new(term));
+                }
+                return Ok(term);
             }
-            return self.resolve_ident(name.0);
+            if names.len() == 1 {
+                return self.resolve_ident(names[0].clone());
+            } else {
+                return Err(self.error_here("expected '->' or '*' after multiple binder headers"));
+            }
         }
         let term = self.parse_term()?;
         if self.consume(&TokenKind::Colon) {
@@ -527,21 +550,23 @@ impl Parser {
         Ok((binder, ty))
     }
 
-    fn try_parse_binder_header(&mut self) -> Result<Option<(Name, Term)>, ParseError> {
+    fn try_parse_binder_header(&mut self) -> Result<Option<(Vec<Name>, Term)>, ParseError> {
         let save = self.pos;
-        let name = match self.peek().kind.clone() {
-            TokenKind::Ident(n) => {
-                self.pos += 1;
-                n
-            }
-            _ => return Ok(None),
-        };
+        let mut names = Vec::new();
+        while let TokenKind::Ident(n) = self.peek().kind.clone() {
+            self.pos += 1;
+            names.push(n);
+        }
+        if names.is_empty() {
+            self.pos = save;
+            return Ok(None);
+        }
         if !self.consume(&TokenKind::Colon) {
             self.pos = save;
             return Ok(None);
         }
         let ty = self.parse_term()?;
-        Ok(Some((name, ty)))
+        Ok(Some((names, ty)))
     }
 
     fn parse_elim(&mut self) -> Result<Term, ParseError> {
@@ -624,12 +649,14 @@ impl Parser {
                 }
                 if let Some(iv) = ivar_binder {
                     self.ivar_env.insert(0, iv.clone());
+                    self.term_env.insert(0, "".to_string());
                 }
                 let body = self.parse_term()?;
                 for _ in ord_binders {
                     self.term_env.remove(0);
                 }
                 if ivar_binder.is_some() {
+                    self.term_env.remove(0);
                     self.ivar_env.remove(0);
                 }
                 cases.push(ElimCase {
@@ -828,6 +855,7 @@ fn parse_universe(name: &str) -> Option<i32> {
 fn expect_interval(term: Term, parser: &Parser) -> Result<I, ParseError> {
     match term {
         Term::TInterval(i) => Ok(i),
+        Term::TVar(idx) => Ok(I::IVar(idx)),
         other => Err(parser.error_here(format!("expected interval expression, got {:?}", other))),
     }
 }

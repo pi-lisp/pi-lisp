@@ -1161,21 +1161,21 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 );
                 check_dt(dts, &case_ctx, &case.body, &expected_body_ty)?;
 
-                let body_at0 = match case.body.as_ref() {
-                    Term::PLam(_, inner) => reduce_pcon_endpoints_dt(
+                 let body_at0 = match case.body.as_ref() {
+                    Term::PLam(_, inner) => shift(-1, 0, &reduce_pcon_endpoints_dt(
                         dts,
                         &apply_literal(&Literal::NegVar(0), inner),
-                    ),
+                    )),
                     _ => nbe_eval(&Term::PApp(
                         case.body.clone(),
                         Box::new(Term::TInterval(I::I0)),
                     )),
                 };
                 let body_at1 = match case.body.as_ref() {
-                    Term::PLam(_, inner) => reduce_pcon_endpoints_dt(
+                    Term::PLam(_, inner) => shift(-1, 0, &reduce_pcon_endpoints_dt(
                         dts,
                         &apply_literal(&Literal::Pos(0), inner),
-                    ),
+                    )),
                     _ => nbe_eval(&Term::PApp(
                         case.body.clone(),
                         Box::new(Term::TInterval(I::I1)),
@@ -1304,14 +1304,14 @@ pub fn check_dt(dts: &[Datatype], ctx: &Ctx, t: &Term, ty: &Term) -> Result<(), 
                         // Instantiate the interval binder at each endpoint by substituting
             // IVar(0) → I0 / I1 via apply_literal (beta would substitute TVar(0),
             // not the interval variable IVar(0) used inside a PLam body).
-            let body_at0 = reduce_pcon_endpoints_dt(
+            let body_at0 = shift(-1, 0, &reduce_pcon_endpoints_dt(
                 dts,
                 &apply_literal(&Literal::NegVar(0), body),
-            );
-            let body_at1 = reduce_pcon_endpoints_dt(
+            ));
+            let body_at1 = shift(-1, 0, &reduce_pcon_endpoints_dt(
                 dts,
                 &apply_literal(&Literal::Pos(0), body),
-            );
+            ));
             require_equal_endpt(ctx, &nbe_eval(&u), &body_at0)?;
             require_equal_endpt(ctx, &nbe_eval(&v), &body_at1)?;
             check_dt(dts, &ctx2, body, &body_ty)

@@ -471,8 +471,63 @@ pub fn normalize(env: &[Value], t: &Term) -> Term {
     quote(env.len(), eval_nbe(env, t))
 }
 
+fn max_var(t: &Term) -> i32 {
+    match t {
+        Term::TVar(i) => *i,
+        Term::TApp(f, a) => max_var(f).max(max_var(a)),
+        Term::TAbs(_, b) => (max_var(b) - 1).max(-1),
+        Term::TUniv(_) => -1,
+        Term::TIntervalTy => -1,
+        Term::TPi(_, a, b) => max_var(a).max(max_var(b) - 1).max(-1),
+        Term::TInterval(_) => -1,
+        Term::TCube(_) => -1,
+        Term::TPath(a, u, v) => max_var(a).max(max_var(u)).max(max_var(v)),
+        Term::PLam(_, b) => (max_var(b) - 1).max(-1),
+        Term::PApp(p, r) => max_var(p).max(max_var(r)),
+        Term::THComp(a, phi, u, u0) => max_var(a).max(max_var(phi)).max(max_var(u)).max(max_var(u0)),
+        Term::TEquiv(a, b) => max_var(a).max(max_var(b)),
+        Term::TMkEquiv(a, b, f, g, eta, eps) => max_var(a)
+            .max(max_var(b))
+            .max(max_var(f))
+            .max(max_var(g))
+            .max(max_var(eta))
+            .max(max_var(eps)),
+        Term::TEquivFwd(e, x) => max_var(e).max(max_var(x)),
+        Term::TUa(e) => max_var(e),
+        Term::TTransport(p, x) => max_var(p).max(max_var(x)),
+        Term::TGlue(a, phi, te) => max_var(a).max(max_var(phi)).max(max_var(te)),
+        Term::TGlueElem(phi, t, a) => max_var(phi).max(max_var(t)).max(max_var(a)),
+        Term::TUnglue(phi, te, g) => max_var(phi).max(max_var(te)).max(max_var(g)),
+        Term::TSigma(_, a, b) => max_var(a).max(max_var(b) - 1).max(-1),
+        Term::TPair(a, b) => max_var(a).max(max_var(b)),
+        Term::TFst(p) => max_var(p),
+        Term::TSnd(p) => max_var(p),
+        Term::TData(_) => -1,
+        Term::TCon(_, _, args) => args.iter().map(max_var).fold(-1, |m, x| m.max(x)),
+        Term::TPCon(_, _, args, r) => args.iter().map(max_var).fold(-1, |m, x| m.max(x)).max(max_var(r)),
+        Term::TElim(motive, cases, scrut) => {
+            let mut m = max_var(motive).max(max_var(scrut));
+            for case in cases {
+                let n = case.binders.len() as i32;
+                m = m.max(max_var(&case.body) - n);
+            }
+            m.max(-1)
+        }
+    }
+}
+
 pub fn nbe_eval(t: &Term) -> Term {
-    normalize(&[], t)
+    let mv = max_var(t);
+    if mv < 0 {
+        normalize(&[], t)
+    } else {
+        let size = (mv + 1) as usize;
+        let mut env = Vec::with_capacity(size);
+        for level in (0..size).rev() {
+            env.push(Value::VNeutral(Neutral::NVar(level)));
+        }
+        normalize(&env, t)
+    }
 }
 
 fn do_equiv_fwd(e: Value, x: Value) -> Value {
@@ -512,8 +567,16 @@ fn value_to_dnf(v: Value) -> DNF {
 
 fn value_to_endpoint(v: &Value) -> Option<I> {
     match v {
-        Value::VInterval(I::I0) => Some(I::I0),
-        Value::VInterval(I::I1) => Some(I::I1),
+        Value::VInterval(i) => {
+            let d = eval_interval(i);
+            if d == dnf_bot() {
+                Some(I::I0)
+            } else if d == dnf_top() {
+                Some(I::I1)
+            } else {
+                None
+            }
+        }
         Value::VCube(d) if *d == dnf_bot() => Some(I::I0),
         Value::VCube(d) if *d == dnf_top() => Some(I::I1),
         _ => None,

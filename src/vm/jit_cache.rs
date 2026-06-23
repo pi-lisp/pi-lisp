@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use crate::tinyasm::jit::JitMemory;
-use crate::vm::jit_abi::JitFrame;
 use crate::vm::bytecode::Chunk;
+use crate::vm::jit_abi::JitFrame;
+use std::collections::HashMap;
 
 struct JitEntry {
     exec_count: u32,
@@ -21,7 +21,11 @@ impl JitCache {
         }
     }
 
-    pub fn tick(&mut self, key: &str, chunk: &Chunk) -> Option<unsafe extern "C" fn(*mut JitFrame)> {
+    pub fn tick(
+        &mut self,
+        key: &str,
+        chunk: &Chunk,
+    ) -> Option<unsafe extern "C" fn(*mut JitFrame)> {
         let entry = self.entries.entry(key.to_string()).or_insert(JitEntry {
             exec_count: 0,
             compiled: None,
@@ -38,7 +42,7 @@ impl JitCache {
                 return Some(fp);
             }
         }
-        
+
         None
     }
 }

@@ -7,8 +7,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use self::haskell::{
-    collect_datatype_info, emit_main_driver, emit_module, hs_path_from_uwuc_path,
-    module_name_from_path, HaskellModuleCtx,
+    HaskellModuleCtx, collect_datatype_info, emit_main_driver, emit_module, hs_path_from_uwuc_path,
+    module_name_from_path,
 };
 use crate::cubical::env::Env;
 use crate::cubical::parser::{Decl, ParseError, ProgramParser};
@@ -105,11 +105,8 @@ pub fn transpile_source(root_path: &Path, source: &str) -> Result<TranspileOutpu
         .iter()
         .find(|f| canonical_import_path(&f.uwuc_path) == root_canonical)
     {
-        if let Some((entry_name, entry_ty)) = root_file
-            .decls
-            .iter()
-            .rev()
-            .find_map(|decl| match decl {
+        if let Some((entry_name, entry_ty)) =
+            root_file.decls.iter().rev().find_map(|decl| match decl {
                 Decl::Def { name, ty, .. } => Some((name.as_str(), ty)),
                 _ => None,
             })
@@ -291,7 +288,11 @@ mod tests {
         assert!(nat.contains("Zero"));
         assert!(nat.contains("Suc Nat"));
         assert!(out.prelude.is_none());
-        assert!(!out.modules.iter().any(|m| m.path.file_stem().and_then(|s| s.to_str()) == Some("Main")));
+        assert!(
+            !out.modules
+                .iter()
+                .any(|m| m.path.file_stem().and_then(|s| s.to_str()) == Some("Main"))
+        );
     }
 
     #[test]
@@ -321,7 +322,8 @@ mod tests {
 
     #[test]
     fn transpile_reports_circular_import() {
-        let dir = std::env::temp_dir().join(format!("cubical_transpile_cycle_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("cubical_transpile_cycle_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
         let a_path = dir.join("a.uwuc");
@@ -343,7 +345,8 @@ mod tests {
 
     #[test]
     fn write_output_creates_files() {
-        let dir = std::env::temp_dir().join(format!("cubical_transpile_out_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("cubical_transpile_out_{}", std::process::id()));
         let out = transpile("hello.uwuc").unwrap();
         write_output(&out, &dir).unwrap();
         assert!(dir.join("Nat.hs").exists());

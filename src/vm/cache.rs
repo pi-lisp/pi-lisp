@@ -25,9 +25,9 @@
 //! the Debug output), but it is correct and cheap for the typical top-level
 //! `define` / arithmetic patterns that dominate a Lisp workload.
 
-use std::collections::HashMap;
 use crate::expr::Expr;
 use crate::vm::bytecode::Chunk;
+use std::collections::HashMap;
 
 /// Two-level compile cache: `is_compilable` results + compiled `Chunk`s.
 pub struct CompileCache {

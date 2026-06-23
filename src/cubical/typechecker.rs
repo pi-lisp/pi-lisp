@@ -947,18 +947,11 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                 .iter()
                 .rev()
                 .fold(sig.face1.clone(), |ty, a| beta(&ty, a));
-            // The path family must be a PLam over the interval variable so that
-            // the type is well-formed as Path (λ_. TData(d)) face0 face1.
-            // For non-parameterized HITs TData(d) is constant, but using PLam
-            // keeps the form correct and would generalise to parameterized types.
-            Ok(Term::TPath(
-                Box::new(Term::PLam(
-                    "_".into(),
-                    Box::new(Term::TData(d.clone())),
-                )),
-                Box::new(nbe_eval(&face0)),
-                Box::new(nbe_eval(&face1)),
-            ))
+            // TPCon(d, pc, args, r) is the path constructor applied at interval
+            // position r — it is a POINT of TData(d), not a path.  At the
+            // endpoints r=I0 / r=I1 it reduces to face0 / face1 respectively
+            // (handled by reduce_pcon_endpoints_dt in check_dt).
+            Ok(Term::TData(d.clone()))
         }
 
         // TElim(motive, cases, scrut)
@@ -1194,6 +1187,57 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
     }
 }
 
+// HIT endpoint reduction (datatype-aware)
+// ---------------------------------------------------------------------------
+/// Reduce `TPCon(d, pc, args, r)` at endpoints `r=I0`/`r=I1` to the
+/// corresponding declared face value, recursively.  This is needed because
+/// `nbe_eval` doesn't carry datatype definitions, so it cannot reduce path
+/// constructors at their boundaries without this extra pass.
+fn reduce_pcon_endpoints_dt(dts: &[Datatype], t: &Term) -> Term {
+    let t = nbe_eval(t);
+    match &t {
+        Term::TPCon(d, pc, args, r) => {
+            let r_nf = nbe_eval(r);
+            let is_i0 = r_nf == Term::TInterval(crate::cubical::interval::I::I0);
+            let is_i1 = r_nf == Term::TInterval(crate::cubical::interval::I::I1);
+            if is_i0 || is_i1 {
+                // Look up the face value from the PConSig.
+                if let Some(dt) = dts.iter().find(|dt| &dt.name == d) {
+                    if let Some(sig) = dt.find_pcon(pc) {
+                        // face0/face1 are in a scope of sig.arity() ordinary args.
+                        // Substitute the checked args into the face term.
+                        let reduced_args: Vec<Term> =
+                            args.iter().map(|a| reduce_pcon_endpoints_dt(dts, a)).collect();
+                        let face = if is_i0 { &sig.face0 } else { &sig.face1 };
+                        let face_inst = reduced_args
+                            .iter()
+                            .rev()
+                            .fold(face.clone(), |acc, a| beta(&acc, a));
+                        return reduce_pcon_endpoints_dt(dts, &nbe_eval(&face_inst));
+                    }
+                }
+            }
+            // Not at an endpoint (or datatype not found): reduce sub-terms.
+            let reduced_args: Vec<Term> =
+                args.iter().map(|a| reduce_pcon_endpoints_dt(dts, a)).collect();
+            nbe_eval(&Term::TPCon(
+                d.clone(),
+                pc.clone(),
+                reduced_args,
+                Box::new(r_nf),
+            ))
+        }
+        // Recurse into PApp so that e.g. `pcon @ (~ i0)` reduces too.
+        Term::PApp(p, r) => {
+            let p2 = reduce_pcon_endpoints_dt(dts, p);
+            let r2 = nbe_eval(r);
+            nbe_eval(&Term::PApp(Box::new(p2), Box::new(r2)))
+        }
+        _ => t,
+    }
+}
+
+
 // ---------------------------------------------------------------------------
 // Type Checking
 // ---------------------------------------------------------------------------
@@ -1239,8 +1283,17 @@ pub fn check_dt(dts: &[Datatype], ctx: &Ctx, t: &Term, ty: &Term) -> Result<(), 
                 p @ Term::PLam { .. } => p,
                 plain => shift(1, 0, &plain),
             };
-            let body_at0 = nbe_eval(&beta(body, &Term::TInterval(I::I0)));
-            let body_at1 = nbe_eval(&beta(body, &Term::TInterval(I::I1)));
+                        // Instantiate the interval binder at each endpoint by substituting
+            // IVar(0) → I0 / I1 via apply_literal (beta would substitute TVar(0),
+            // not the interval variable IVar(0) used inside a PLam body).
+            let body_at0 = reduce_pcon_endpoints_dt(
+                dts,
+                &apply_literal(&Literal::NegVar(0), body),
+            );
+            let body_at1 = reduce_pcon_endpoints_dt(
+                dts,
+                &apply_literal(&Literal::Pos(0), body),
+            );
             require_equal_endpt(ctx, &nbe_eval(&u), &body_at0)?;
             require_equal_endpt(ctx, &nbe_eval(&v), &body_at1)?;
             check_dt(dts, &ctx2, body, &body_ty)

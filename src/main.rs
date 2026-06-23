@@ -146,22 +146,23 @@ fn main() {
                         for module in &output.modules {
                             println!(
                                 "wrote {}",
-                                out_dir.join(
-                                    module
-                                        .path
-                                        .file_name()
-                                        .unwrap_or_default()
-                                )
-                                .display()
+                                out_dir
+                                    .join(module.path.file_name().unwrap_or_default())
+                                    .display()
                             );
                         }
                         if let Some(prelude) = &output.prelude {
                             println!("wrote {}", out_dir.join(&prelude.path).display());
                         }
-                        if output.modules.iter().any(|m| {
-                            m.path.file_stem().and_then(|s| s.to_str()) == Some("Main")
-                        }) {
-                            println!("run: cd {} && ghc -o app Main.hs && ./app", out_dir.display());
+                        if output
+                            .modules
+                            .iter()
+                            .any(|m| m.path.file_stem().and_then(|s| s.to_str()) == Some("Main"))
+                        {
+                            println!(
+                                "run: cd {} && ghc -o app Main.hs && ./app",
+                                out_dir.display()
+                            );
                         }
                     }
                     Err(err) => {

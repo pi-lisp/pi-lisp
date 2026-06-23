@@ -2,8 +2,8 @@
 mod asm;
 mod base;
 mod cubical;
-mod utils;
 mod network;
+mod utils;
 
 use crate::env::{Env, new_env};
 use crate::expr::Expr;

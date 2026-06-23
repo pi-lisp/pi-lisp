@@ -594,12 +594,29 @@ impl Parser {
                 binders.push(name);
             }
             if self.consume(&TokenKind::FatArrow) || self.consume(&TokenKind::Arrow) {
-                for binder in binders.iter().rev() {
+                                // Determine if this is a path constructor: if so, the last
+                // binder is the interval variable and should go into ivar_env.
+                let is_path_con = self
+                    .find_constructor(&con)
+                    .is_some_and(|(_, is_path)| is_path);
+                let (ord_binders, ivar_binder) = if is_path_con && !binders.is_empty() {
+                    let split = binders.len() - 1;
+                    (&binders[..split], Some(&binders[split]))
+                } else {
+                    (&binders[..], None)
+                };
+                for binder in ord_binders.iter().rev() {
                     self.term_env.insert(0, binder.clone());
                 }
+                if let Some(iv) = ivar_binder {
+                    self.ivar_env.insert(0, iv.clone());
+                }
                 let body = self.parse_term()?;
-                for _ in &binders {
+                for _ in ord_binders {
                     self.term_env.remove(0);
+                }
+                if ivar_binder.is_some() {
+                    self.ivar_env.remove(0);
                 }
                 cases.push(ElimCase {
                     con,

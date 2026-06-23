@@ -100,11 +100,7 @@ impl Compiler {
 ///
 /// Non-macro list heads are left structurally intact; only their sub-expressions
 /// are recursively expanded.  Atoms are returned unchanged.
-fn expand_all(
-    expr: &Expr,
-    env: crate::expr::Env,
-    heap: &mut Heap,
-) -> Result<Expr, String> {
+fn expand_all(expr: &Expr, env: crate::expr::Env, heap: &mut Heap) -> Result<Expr, String> {
     match expr {
         // A CubicalTerm anywhere in the tree makes the whole thing uncompilable.
         Expr::CubicalTerm(_) => Err("uncompilable: CubicalTerm".into()),
@@ -252,7 +248,6 @@ fn compile_list(
                 return compile_quasiquote(&list[1], 1, chunk, heap, env);
             }
 
-
             // ── if ────────────────────────────────────────────────────────────
             "if" => return compile_if(list, chunk, heap, env, tail),
 
@@ -298,13 +293,9 @@ fn compile_list(
 
 fn compile_quote(list: &[Expr], chunk: &mut Chunk) -> Result<(), String> {
     if list.len() != 2 {
-        return Err(format!(
-            "quote expects 1 argument, got {}",
-            list.len() - 1
-        ));
+        return Err(format!("quote expects 1 argument, got {}", list.len() - 1));
     }
-    let v = expr_to_value(&list[1])
-        .map_err(|e| format!("quote: cannot compile datum: {}", e))?;
+    let v = expr_to_value(&list[1]).map_err(|e| format!("quote: cannot compile datum: {}", e))?;
     chunk.emit(Op::LoadConst(v));
     Ok(())
 }
@@ -410,7 +401,6 @@ fn compile_quasiquote(
     }
 }
 
-
 // ── if ────────────────────────────────────────────────────────────────────────
 
 /// Compile `(if cond then [else])`.
@@ -494,12 +484,7 @@ fn compile_define(
     }
     let name = match &list[1] {
         Expr::Symbol(s) => s.clone(),
-        other => {
-            return Err(format!(
-                "define: expected a symbol name, got {:?}",
-                other
-            ))
-        }
+        other => return Err(format!("define: expected a symbol name, got {:?}", other)),
     };
 
     // Detect `(define name (lambda ...))`  — compile with self-name so the
@@ -545,19 +530,11 @@ fn compile_set(
     env: crate::expr::Env,
 ) -> Result<(), String> {
     if list.len() != 3 {
-        return Err(format!(
-            "set! expects 2 arguments, got {}",
-            list.len() - 1
-        ));
+        return Err(format!("set! expects 2 arguments, got {}", list.len() - 1));
     }
     let name = match &list[1] {
         Expr::Symbol(s) => s.clone(),
-        other => {
-            return Err(format!(
-                "set!: expected a symbol name, got {:?}",
-                other
-            ))
-        }
+        other => return Err(format!("set!: expected a symbol name, got {:?}", other)),
     };
     compile_expr(&list[2], chunk, heap, env, false)?;
     // Emit StoreVar; the VM will distinguish set! vs define by context if needed.
@@ -797,12 +774,7 @@ fn compile_let(
     }
     let bindings = match &list[1] {
         Expr::List(b) => b,
-        other => {
-            return Err(format!(
-                "let: expected a list of bindings, got {:?}",
-                other
-            ))
-        }
+        other => return Err(format!("let: expected a list of bindings, got {:?}", other)),
     };
 
     // Phase 1: Evaluate all initialisers in the *outer* environment.
@@ -824,7 +796,7 @@ fn compile_let(
                 return Err(format!(
                     "let binding must be a (name expr) pair, got {:?}",
                     other
-                ))
+                ));
             }
         }
     }
@@ -893,7 +865,7 @@ fn compile_let_star(
             return Err(format!(
                 "let*: expected a list of bindings, got {:?}",
                 other
-            ))
+            ));
         }
     };
 
@@ -918,7 +890,7 @@ fn compile_let_star(
                 return Err(format!(
                     "let* binding must be a (name expr) pair, got {:?}",
                     other
-                ))
+                ));
             }
         }
     }
@@ -965,8 +937,8 @@ fn compile_lambda(
             list.len() - 1
         ));
     }
-    let params = parse_params(&list[1])
-        .map_err(|e| format!("lambda: invalid parameter list: {}", e))?;
+    let params =
+        parse_params(&list[1]).map_err(|e| format!("lambda: invalid parameter list: {}", e))?;
 
     // Compile the body into a new sub-chunk.
     let mut body_chunk = Chunk::new();
@@ -986,13 +958,7 @@ fn compile_lambda(
             body_chunk.emit(Op::Pop);
         }
         // Last body expression is in tail position.
-        compile_expr(
-            body_exprs.last().unwrap(),
-            &mut body_chunk,
-            heap,
-            env,
-            true,
-        )?;
+        compile_expr(body_exprs.last().unwrap(), &mut body_chunk, heap, env, true)?;
     }
     // Every lambda body ends with Return.
     body_chunk.emit(Op::Return);
@@ -1006,7 +972,7 @@ fn compile_lambda(
         Expr::List(
             std::iter::once(Expr::Symbol("begin".into()))
                 .chain(body_exprs.iter().cloned())
-                .collect()
+                .collect(),
         )
     };
 
@@ -1184,4 +1150,3 @@ fn is_compilable_rec(expr: &Expr, qq_depth: usize, heap: &Heap, env: GcHandle) -
 pub fn is_compilable(expr: &Expr, heap: &Heap, env: GcHandle) -> bool {
     is_compilable_rec(expr, 0, heap, env)
 }
-

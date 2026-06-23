@@ -577,10 +577,7 @@ fn eval_for(list: &[Expr], env: Env, heap: &mut Heap) -> Result<Step, String> {
         let items = match coll {
             Expr::List(items) => items,
             other => {
-                return Err(format!(
-                    "for: collection must be a list, got {:?}",
-                    other
-                ));
+                return Err(format!("for: collection must be a list, got {:?}", other));
             }
         };
         for item in items {

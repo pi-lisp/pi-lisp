@@ -1,7 +1,7 @@
-use std::ffi::CStr;
-use std::ptr;
 use crate::gc::GcHandle;
 use crate::vm::machine::{VM, VmValue};
+use std::ffi::CStr;
+use std::ptr;
 
 /// Passed to every JIT-compiled chunk. The JIT frame gives the
 /// native code access to the VM's operand stack and environment.
@@ -21,16 +21,15 @@ pub struct JitFrame {
     pub error: *const u8,
 
     // -- Rust-only fields below this line (not accessed by JIT code) --
-    
     /// Parallel array for tags. JIT code doesn't touch this during numeric hot paths,
     /// but helpers will need it.
     pub tag_ptr: *mut u64,
-    
+
     /// Parallel array for full VmValues (used by helpers that need to reconstruct Objects).
     pub val_ptr: *mut VmValue,
-    
+
     pub capacity: usize,
-    
+
     /// Raw pointer to the VM so helpers can access the Heap.
     pub vm_ptr: *mut std::ffi::c_void,
 }
@@ -80,7 +79,11 @@ impl JitFrame {
         }
 
         if !self.error.is_null() {
-            let err_str = unsafe { CStr::from_ptr(self.error as *const i8).to_string_lossy().into_owned() };
+            let err_str = unsafe {
+                CStr::from_ptr(self.error as *const i8)
+                    .to_string_lossy()
+                    .into_owned()
+            };
             return Err(err_str);
         }
 
@@ -144,27 +147,35 @@ impl JitFrame {
 // -- Helpers called from JIT code --
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jit_helper_load_var(frame_ptr: *mut JitFrame, name_ptr: *const u8, name_len: usize) {
+pub unsafe extern "C" fn jit_helper_load_var(
+    frame_ptr: *mut JitFrame,
+    name_ptr: *const u8,
+    name_len: usize,
+) {
     let frame = unsafe { &mut *frame_ptr };
     let vm = unsafe { &mut *(frame.vm_ptr as *mut VM<'_>) };
-    let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
+    let name =
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
 
     match vm.heap_mut().env_get(frame.env, name) {
-        Ok(expr) => {
-            match crate::vm::machine::expr_to_vm_value(&expr, vm.heap_mut()) {
-                Ok(val) => frame.push_val(val),
-                Err(_) => frame.error = "JIT LoadVar expr error\0".as_ptr(),
-            }
-        }
+        Ok(expr) => match crate::vm::machine::expr_to_vm_value(&expr, vm.heap_mut()) {
+            Ok(val) => frame.push_val(val),
+            Err(_) => frame.error = "JIT LoadVar expr error\0".as_ptr(),
+        },
         Err(_) => frame.error = "JIT LoadVar undefined variable\0".as_ptr(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jit_helper_store_var(frame_ptr: *mut JitFrame, name_ptr: *const u8, name_len: usize) {
+pub unsafe extern "C" fn jit_helper_store_var(
+    frame_ptr: *mut JitFrame,
+    name_ptr: *const u8,
+    name_len: usize,
+) {
     let frame = unsafe { &mut *frame_ptr };
     let vm = unsafe { &mut *(frame.vm_ptr as *mut VM<'_>) };
-    let name = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
+    let name =
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len)) };
 
     if let Ok(val) = frame.pop_val() {
         if let Ok(expr) = crate::vm::machine::vm_value_to_expr(val, vm.heap_mut()) {
@@ -178,7 +189,7 @@ pub unsafe extern "C" fn jit_helper_store_var(frame_ptr: *mut JitFrame, name_ptr
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn jit_helper_call(frame_ptr: *mut JitFrame, _n_args: usize) {
     let frame = unsafe { &mut *frame_ptr };
-    
+
     // In a full implementation, we'd sync the JIT stack to the VM stack, call do_call,
     // and run the new frame in the interpreter or JIT.
     // For now, this is a placeholder stub.
@@ -192,7 +203,10 @@ pub unsafe extern "C" fn jit_helper_make_func(frame_ptr: *mut JitFrame, _code_of
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jit_helper_tree_eval(frame_ptr: *mut JitFrame, _expr_ptr: *const crate::expr::Expr) {
+pub unsafe extern "C" fn jit_helper_tree_eval(
+    frame_ptr: *mut JitFrame,
+    _expr_ptr: *const crate::expr::Expr,
+) {
     let frame = unsafe { &mut *frame_ptr };
     frame.error = "JIT TreeEval not fully implemented\0".as_ptr();
 }
@@ -217,9 +231,11 @@ pub unsafe extern "C" fn jit_helper_pop_env(frame_ptr: *mut JitFrame) {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jit_helper_store_self(frame_ptr: *mut JitFrame, _name_ptr: *const u8, _name_len: usize) {
+pub unsafe extern "C" fn jit_helper_store_self(
+    frame_ptr: *mut JitFrame,
+    _name_ptr: *const u8,
+    _name_len: usize,
+) {
     let frame = unsafe { &mut *frame_ptr };
     frame.error = "JIT StoreSelf not fully implemented\0".as_ptr();
 }
-
-

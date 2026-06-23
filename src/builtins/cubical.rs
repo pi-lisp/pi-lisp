@@ -2,11 +2,11 @@ use std::rc::Rc;
 use std::result;
 
 use crate::builtins::{cubical, num};
-use crate::cubical::{RunError, RunOutput, eval as ctt_eval_mod};
 use crate::cubical::interval::{I, eval_interval};
+use crate::cubical::run;
 use crate::cubical::syntax::Term;
 use crate::cubical::typechecker as tc;
-use crate::cubical::run;
+use crate::cubical::{RunError, RunOutput, eval as ctt_eval_mod};
 use crate::env::{Env, env_set};
 use crate::expr::Expr;
 use crate::gc::Heap;
@@ -751,10 +751,7 @@ pub fn register_load_cubical(env: Env, heap: &mut Heap) {
         "load-ctt".into(),
         Expr::Func(Rc::new(|args, heap| {
             if args.len() != 1 {
-                return Err(format!(
-                    "load-ctt: expected 1 argument, got {}",
-                    args.len()
-                ));
+                return Err(format!("load-ctt: expected 1 argument, got {}", args.len()));
             }
 
             let filename = match &args[0] {

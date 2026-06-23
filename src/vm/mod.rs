@@ -18,9 +18,9 @@ pub mod machine;
 #[cfg(all(feature = "jit", target_arch = "x86_64"))]
 pub mod jit_abi;
 #[cfg(all(feature = "jit", target_arch = "x86_64"))]
-pub mod jit_compiler;
-#[cfg(all(feature = "jit", target_arch = "x86_64"))]
 pub mod jit_cache;
+#[cfg(all(feature = "jit", target_arch = "x86_64"))]
+pub mod jit_compiler;
 
 use std::cell::RefCell;
 
@@ -119,9 +119,7 @@ pub fn vm_eval(expr: &Expr, env: GcHandle, heap: &mut Heap) -> Result<Expr, Stri
             // Expand macros + compile — paid only once per unique expression.
             match Compiler::compile(expr, env, heap) {
                 Ok(compiled) => {
-                    CACHE.with(|c| {
-                        c.borrow_mut().insert_chunk(key.clone(), compiled.clone())
-                    });
+                    CACHE.with(|c| c.borrow_mut().insert_chunk(key.clone(), compiled.clone()));
                     compiled
                 }
                 Err(e) => {
@@ -159,8 +157,8 @@ pub fn cache_stats() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reader::parse_all;
     use crate::builtins;
+    use crate::reader::parse_all;
 
     fn eval_str(src: &str, heap: &mut Heap, env: GcHandle) -> Result<Expr, String> {
         let exprs = parse_all(src)?;
@@ -183,13 +181,22 @@ mod tests {
 
         // define, let, let* are now compilable
         let expr3 = parse_all("(let ((x 1)) x)").unwrap().remove(0);
-        assert!(is_compilable(&expr3, &heap, env), "let should now be compilable");
+        assert!(
+            is_compilable(&expr3, &heap, env),
+            "let should now be compilable"
+        );
 
         let expr4 = parse_all("(define x 1)").unwrap().remove(0);
-        assert!(is_compilable(&expr4, &heap, env), "define should now be compilable");
+        assert!(
+            is_compilable(&expr4, &heap, env),
+            "define should now be compilable"
+        );
 
         let expr5 = parse_all("(let* ((x 1) (y (+ x 1))) y)").unwrap().remove(0);
-        assert!(is_compilable(&expr5, &heap, env), "let* should now be compilable");
+        assert!(
+            is_compilable(&expr5, &heap, env),
+            "let* should now be compilable"
+        );
 
         // lambda is compilable (compile_lambda handles it)
         let expr_lambda = parse_all("(lambda (x) x)").unwrap().remove(0);
@@ -205,7 +212,10 @@ mod tests {
 
         // defmacro: never compilable (always tree-walker)
         let expr_dm = parse_all("(defmacro foo (x) x)").unwrap().remove(0);
-        assert!(!is_compilable(&expr_dm, &heap, env), "defmacro must not be compilable");
+        assert!(
+            !is_compilable(&expr_dm, &heap, env),
+            "defmacro must not be compilable"
+        );
     }
 
     #[test]
@@ -215,8 +225,11 @@ mod tests {
 
         // define returns ()
         let res = eval_str("(define x 42)", &mut heap, env).unwrap();
-        assert!(matches!(res, Expr::List(ref v) if v.is_empty()),
-            "define should return (): got {:?}", res);
+        assert!(
+            matches!(res, Expr::List(ref v) if v.is_empty()),
+            "define should return (): got {:?}",
+            res
+        );
 
         // The binding should now be visible
         let res2 = eval_str("x", &mut heap, env).unwrap();
@@ -270,7 +283,7 @@ mod tests {
         // This still falls back to tree-walker (uses lambda)
         let res2 = eval_str("(let ((x 5)) ((lambda (y) (+ x y)) 10))", &mut heap, env).unwrap();
         assert!(matches!(res2, Expr::Number(n) if n == 15.0));
-     }
+    }
 
     #[test]
     fn test_vm_quasiquote() {
@@ -287,7 +300,10 @@ mod tests {
 
         // 3. nested quasiquote
         let res3 = eval_str("`(a `(b ,(+ 1 2)))", &mut heap, env).unwrap();
-        assert_eq!(format!("{:?}", res3), "(a (quasiquote (b (unquote (+ 1 2)))))");
+        assert_eq!(
+            format!("{:?}", res3),
+            "(a (quasiquote (b (unquote (+ 1 2)))))"
+        );
 
         // 4. quasiquote in macro body
         let macro_decl = "
@@ -320,60 +336,103 @@ mod tests {
         };
 
         // 1. defmacro returns ()
-        let dm_res = eval_seq("(defmacro my-when (condition body) `(if ,condition ,body ()))",
-            &mut heap, env).unwrap();
-        assert!(matches!(dm_res, Expr::List(ref v) if v.is_empty()),
-            "defmacro should return (): got {:?}", dm_res);
+        let dm_res = eval_seq(
+            "(defmacro my-when (condition body) `(if ,condition ,body ()))",
+            &mut heap,
+            env,
+        )
+        .unwrap();
+        assert!(
+            matches!(dm_res, Expr::List(ref v) if v.is_empty()),
+            "defmacro should return (): got {:?}",
+            dm_res
+        );
 
         // 2. Basic top-level macro call
         let r = eval_seq(
             "(defmacro my-when2 (cond body) `(if ,cond ,body ()))
              (my-when2 (> 3 2) 99)",
-            &mut heap, env).unwrap();
-        assert!(matches!(r, Expr::Number(n) if n == 99.0),
-            "top-level macro call failed: {:?}", r);
+            &mut heap,
+            env,
+        )
+        .unwrap();
+        assert!(
+            matches!(r, Expr::Number(n) if n == 99.0),
+            "top-level macro call failed: {:?}",
+            r
+        );
 
         // 3. Macro call inside let body — this was the Problem 1 bug
         let r2 = eval_seq(
             "(defmacro my-if-pos (x body) `(if (> ,x 0) ,body ()))
              (let ((v 5)) (my-if-pos v 42))",
-            &mut heap, env).unwrap();
-        assert!(matches!(r2, Expr::Number(n) if n == 42.0),
-            "macro inside let failed: {:?}", r2);
+            &mut heap,
+            env,
+        )
+        .unwrap();
+        assert!(
+            matches!(r2, Expr::Number(n) if n == 42.0),
+            "macro inside let failed: {:?}",
+            r2
+        );
 
         // 4. Macro call inside lambda body
         let r3 = eval_seq(
             "(defmacro my-double-check (x body) `(if (> ,x 0) ,body 0))
              (define check-fn (lambda (n) (my-double-check n (* n 2))))
              (check-fn 7)",
-            &mut heap, env).unwrap();
-        assert!(matches!(r3, Expr::Number(n) if n == 14.0),
-            "macro inside lambda failed: {:?}", r3);
+            &mut heap,
+            env,
+        )
+        .unwrap();
+        assert!(
+            matches!(r3, Expr::Number(n) if n == 14.0),
+            "macro inside lambda failed: {:?}",
+            r3
+        );
 
         // 5. Macro call as argument to a function
         let r4 = eval_seq(
             "(defmacro my-or (a b) `(if ,a ,a ,b))
              (+ (my-or 0 3) (my-or 4 0))",
-            &mut heap, env).unwrap();
-        assert!(matches!(r4, Expr::Number(n) if n == 7.0),
-            "macro as function argument failed: {:?}", r4);
+            &mut heap,
+            env,
+        )
+        .unwrap();
+        assert!(
+            matches!(r4, Expr::Number(n) if n == 7.0),
+            "macro as function argument failed: {:?}",
+            r4
+        );
 
         // 6. Nested macro calls
         let r5 = eval_seq(
             "(defmacro my-and2 (a b) `(if ,a ,b ()))
              (defmacro my-when3 (cond body) `(if ,cond ,body ()))
              (my-when3 (my-and2 1 1) 55)",
-            &mut heap, env).unwrap();
-        assert!(matches!(r5, Expr::Number(n) if n == 55.0),
-            "nested macro calls failed: {:?}", r5);
+            &mut heap,
+            env,
+        )
+        .unwrap();
+        assert!(
+            matches!(r5, Expr::Number(n) if n == 55.0),
+            "nested macro calls failed: {:?}",
+            r5
+        );
 
         // 7. Macro inside let*, each binding can reference earlier ones
         let r6 = eval_seq(
             "(defmacro my-inc (x) `(+ ,x 1))
              (let* ((a 10) (b (my-inc a))) b)",
-            &mut heap, env).unwrap();
-        assert!(matches!(r6, Expr::Number(n) if n == 11.0),
-            "macro inside let* binding failed: {:?}", r6);
+            &mut heap,
+            env,
+        )
+        .unwrap();
+        assert!(
+            matches!(r6, Expr::Number(n) if n == 11.0),
+            "macro inside let* binding failed: {:?}",
+            r6
+        );
     }
 
     /// Verifies that the compile cache does not corrupt results when the same
@@ -387,13 +446,19 @@ mod tests {
         // should be served from cache.
         for i in 0..5_u32 {
             let res = eval_str("(+ 1 2)", &mut heap, env).unwrap();
-            assert!(matches!(res, Expr::Number(n) if n == 3.0),
-                "iteration {i}: expected 3.0, got {:?}", res);
+            assert!(
+                matches!(res, Expr::Number(n) if n == 3.0),
+                "iteration {i}: expected 3.0, got {:?}",
+                res
+            );
         }
 
         // Verify that the chunk cache actually has an entry.
         let (chunks, _compilable) = cache_stats();
-        assert!(chunks > 0, "chunk cache should be non-empty after evaluation");
+        assert!(
+            chunks > 0,
+            "chunk cache should be non-empty after evaluation"
+        );
     }
 
     /// Verifies that defmacro invalidates the compilable cache so that later
@@ -417,10 +482,16 @@ mod tests {
         eval_seq(
             "(defmacro double (x) `(+ ,x ,x))
              (double 7)",
-            &mut heap, env,
-        ).map(|r| {
-            assert!(matches!(r, Expr::Number(n) if n == 14.0),
-                "macro double failed: {:?}", r);
-        }).unwrap_or(());
+            &mut heap,
+            env,
+        )
+        .map(|r| {
+            assert!(
+                matches!(r, Expr::Number(n) if n == 14.0),
+                "macro double failed: {:?}",
+                r
+            );
+        })
+        .unwrap_or(());
     }
 }

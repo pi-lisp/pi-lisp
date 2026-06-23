@@ -30,7 +30,10 @@ fn port_arg(expr: &Expr, fn_name: &str) -> Result<u16, String> {
                 Ok(p as u16)
             }
         }
-        other => Err(format!("{}: expected a port number, got {:?}", fn_name, other)),
+        other => Err(format!(
+            "{}: expected a port number, got {:?}",
+            fn_name, other
+        )),
     }
 }
 
@@ -78,8 +81,14 @@ fn http_request(
     body: Option<&str>,
 ) -> Result<Expr, String> {
     let addr = format!("{}:{}", host, port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("http-{}: connect to {} failed: {}", method.to_lowercase(), addr, e))?;
+    let mut stream = TcpStream::connect(&addr).map_err(|e| {
+        format!(
+            "http-{}: connect to {} failed: {}",
+            method.to_lowercase(),
+            addr,
+            e
+        )
+    })?;
 
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -227,9 +236,7 @@ fn register_http(env: Env, heap: &mut Heap) {
         "http-post".into(),
         Expr::Func(Rc::new(|args, _heap| {
             if args.len() != 4 {
-                return Err(
-                    "http-post: expects exactly 4 arguments (host port path body)".into(),
-                );
+                return Err("http-post: expects exactly 4 arguments (host port path body)".into());
             }
             let host = str_arg(&args[0], "http-post")?;
             let port = port_arg(&args[1], "http-post")?;
@@ -259,7 +266,7 @@ fn register_http(env: Env, heap: &mut Heap) {
                     return Err(format!(
                         "http-status: expected a 3-element response list, got {:?}",
                         other
-                    ))
+                    ));
                 }
             };
             let status_line = str_arg(&response[0], "http-status")?;
@@ -294,7 +301,7 @@ fn register_http(env: Env, heap: &mut Heap) {
                     return Err(format!(
                         "http-body: expected a 3-element response list, got {:?}",
                         other
-                    ))
+                    ));
                 }
             };
             Ok(response[2].clone())

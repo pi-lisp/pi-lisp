@@ -49,7 +49,6 @@ def cast : (A B : U0) -> Equiv A B -> A -> B =
 def transportExample : (A B : U0) -> Equiv A B -> A -> B =
   \A B e a. transport (\<i> ua e @ i) a
 
-def glueExample : (A B : U0) -> Equiv A B -> Glue B i1 (\_. (A, e)) =
-  \A B e. glueElem i1 (\_. a) a
-
+def glueExample : (A B : U0) -> (e : Equiv A B) -> (a : A) -> Glue B i1 (\_. (A, e)) =
+  \A B e a. glueElem i1 (\_. a) a
 

@@ -1,463 +1,19 @@
-//! Hand-written parser for the cubical surface language.
-//!
-//! The parser resolves ordinary variables and interval variables to de Bruijn
-//! indices as it parses. Top-level definitions parsed earlier in a program are
-//! available to later declarations as globals.
+//! Recursive-descent parser: consumes the [`Token`] stream produced by the
+//! [`Lexer`](super::lexer::Lexer) and builds [`Term`]s / [`Decl`]s, resolving
+//! variables to de Bruijn indices along the way.
 
+use super::lexer::{err, Token, TokenKind};
+use super::{Decl, ParseError};
 use crate::cubical::interval::I;
 use crate::cubical::syntax::{ConSig, Datatype, ElimCase, Name, PConSig, Term};
-use std::fmt;
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
-    pub message: String,
-    pub line: usize,
-    pub col: usize,
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} at {}:{}", self.message, self.line, self.col)
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decl {
-    Def { name: Name, ty: Term, val: Term },
-    Data(Datatype),
-    Import { path: String },
-}
-
-pub fn parse_term(src: &str) -> Result<Term, ParseError> {
-    let tokens = Lexer::new(src).lex()?;
-    let mut parser = Parser::new(tokens);
-    let term = parser.parse_term()?;
-    parser.expect(TokenKind::Eof, "expected end of input")?;
-    Ok(term)
-}
-
-pub fn parse_program(src: &str) -> Result<Vec<Decl>, ParseError> {
-    let mut parser = ProgramParser::new(src)?;
-    let mut decls = Vec::new();
-    while let Some(decl) = parser.next_decl()? {
-        decls.push(decl);
-    }
-    Ok(decls)
-}
-
-/// Incremental top-level parser for multi-file programs.
-///
-/// After processing `import` declarations at runtime, call [`sync_from_env`]
-/// so later declarations can resolve names from the merged environment.
-pub struct ProgramParser {
-    parser: Parser,
-}
-
-impl ProgramParser {
-    pub fn new(src: &str) -> Result<Self, ParseError> {
-        let tokens = Lexer::new(src).lex()?;
-        Ok(Self {
-            parser: Parser::new(tokens),
-        })
-    }
-
-    pub fn sync_from_env(&mut self, env: &crate::cubical::env::Env) {
-        self.parser.global_env = env
-            .defs
-            .iter()
-            .map(|(name, _, _)| name.clone())
-            .collect();
-        self.parser.datatypes = env.datatypes.clone();
-    }
-
-    pub fn next_decl(&mut self) -> Result<Option<Decl>, ParseError> {
-        if self.parser.at(&TokenKind::Eof) {
-            return Ok(None);
-        }
-        let decl = if self.parser.consume_ident("def") {
-            self.parser.parse_def()?
-        } else if self.parser.consume_ident("data") {
-            self.parser.parse_data_decl()?
-        } else if self.parser.consume_ident("import") {
-            self.parser.parse_import()?
-        } else {
-            return Err(self.parser.error_here("expected top-level declaration"));
-        };
-        match &decl {
-            Decl::Def { name, .. } => self.parser.global_env.insert(0, name.clone()),
-            Decl::Data(dt) => self.parser.datatypes.push(dt.clone()),
-            Decl::Import { .. } => {}
-        }
-        Ok(Some(decl))
-    }
-}
-
-/// Parse and typecheck a complete program.
-///
-/// Declarations are processed in order. Each `data` declaration is added to
-/// the datatype environment before the next declaration is checked, so a `def`
-/// can refer to any datatype declared above it — exactly the behaviour the
-/// user expects.
-///
-/// Returns the list of successfully checked definitions (name, type, value)
-/// together with the collected datatypes, or a human-readable error string.
-pub fn typecheck_program(
-    src: &str,
-) -> Result<(Vec<crate::cubical::syntax::Datatype>, Vec<(String, crate::cubical::syntax::Term, crate::cubical::syntax::Term)>), String> {
-    use crate::cubical::typechecker::check_closed_dt;
-    use crate::cubical::syntax::Datatype;
-
-    let decls = parse_program(src).map_err(|e| e.to_string())?;
-
-    let mut dts: Vec<Datatype> = Vec::new();
-    let mut defs: Vec<(String, crate::cubical::syntax::Term, crate::cubical::syntax::Term)> = Vec::new();
-
-    for decl in decls {
-        match decl {
-            Decl::Import { .. } => {
-                return Err("import requires a file path; use cubical::run instead".to_string());
-            }
-            Decl::Data(dt) => {
-                // Make the datatype available to all subsequent declarations.
-                dts.push(dt);
-            }
-            Decl::Def { name, ty, val } => {
-                // Check the definition body against its declared type, with
-                // all datatypes declared so far in scope.
-                check_closed_dt(&dts, &val, &ty)
-                    .map_err(|e| format!("type error in '{}': {}", name, e))?;
-                defs.push((name, ty, val));
-            }
-        }
-    }
-
-    Ok((dts, defs))
-}
-
-// ---------------------------------------------------------------------------
-// Lexer
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TokenKind {
-    Ident(String),
-    Int(i32),
-    LParen,
-    RParen,
-    LBrace,
-    RBrace,
-    LAngle,
-    RAngle,
-    Colon,
-    Comma,
-    Dot,
-    Arrow,
-    FatArrow,
-    Pipe,
-    At,
-    Backslash,
-    Star,
-    Slash,
-    AndSym,
-    OrSym,
-    Tilde,
-    LBracket,
-    RBracket,
-    Equals,
-    String(String),
-    Eof,
-}
-
-#[derive(Debug, Clone)]
-struct Token {
-    kind: TokenKind,
-    line: usize,
-    col: usize,
-}
-
-struct Lexer<'a> {
-    chars: std::str::Chars<'a>,
-    peeked: Option<char>,
-    line: usize,
-    col: usize,
-}
-
-impl<'a> Lexer<'a> {
-    fn new(src: &'a str) -> Self {
-        Self {
-            chars: src.chars(),
-            peeked: None,
-            line: 1,
-            col: 1,
-        }
-    }
-
-    fn lex(mut self) -> Result<Vec<Token>, ParseError> {
-        let mut tokens = Vec::new();
-        while let Some(ch) = self.peek() {
-            let line = self.line;
-            let col = self.col;
-            match ch {
-                c if c.is_whitespace() => {
-                    self.bump();
-                }
-                '-' => {
-                    self.bump();
-                    if self.peek() == Some('-') {
-                        while let Some(c) = self.peek() {
-                            self.bump();
-                            if c == '\n' {
-                                break;
-                            }
-                        }
-                    } else if self.peek() == Some('>') {
-                        self.bump();
-                        tokens.push(tok(TokenKind::Arrow, line, col));
-                    } else {
-                        return Err(err("unexpected '-'", line, col));
-                    }
-                }
-                '=' => {
-                    self.bump();
-                    if self.peek() == Some('>') {
-                        self.bump();
-                        tokens.push(tok(TokenKind::FatArrow, line, col));
-                    } else {
-                        tokens.push(tok(TokenKind::Equals, line, col));
-                    }
-                }
-                '/' => {
-                    self.bump();
-                    if self.peek() == Some('\\') {
-                        self.bump();
-                        tokens.push(tok(TokenKind::AndSym, line, col));
-                    } else {
-                        tokens.push(tok(TokenKind::Slash, line, col));
-                    }
-                }
-                '\\' => {
-                    self.bump();
-                    if self.peek() == Some('/') {
-                        self.bump();
-                        tokens.push(tok(TokenKind::OrSym, line, col));
-                    } else {
-                        tokens.push(tok(TokenKind::Backslash, line, col));
-                    }
-                }
-                '(' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::LParen, line, col));
-                }
-                ')' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::RParen, line, col));
-                }
-                '{' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::LBrace, line, col));
-                }
-                '}' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::RBrace, line, col));
-                }
-                '<' | '⟨' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::LAngle, line, col));
-                }
-                '>' | '⟩' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::RAngle, line, col));
-                }
-                ':' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::Colon, line, col));
-                }
-                ',' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::Comma, line, col));
-                }
-                '.' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::Dot, line, col));
-                }
-                '|' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::Pipe, line, col));
-                }
-                '@' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::At, line, col));
-                }
-                '*' | '×' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::Star, line, col));
-                }
-                '[' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::LBracket, line, col));
-                }
-                ']' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::RBracket, line, col));
-                }
-                '~' | '¬' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::Tilde, line, col));
-                }
-                '∧' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::AndSym, line, col));
-                }
-                '∨' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::OrSym, line, col));
-                }
-                'λ' => {
-                    self.bump();
-                    tokens.push(tok(TokenKind::Backslash, line, col));
-                }
-                '"' => tokens.push(self.lex_string(line, col)?),
-                c if c.is_ascii_digit() => tokens.push(self.lex_int(line, col)?),
-                c if is_ident_start(c) => tokens.push(self.lex_ident(line, col)),
-                other => return Err(err(format!("unexpected character '{}'", other), line, col)),
-            }
-        }
-        tokens.push(tok(TokenKind::Eof, self.line, self.col));
-        Ok(tokens)
-    }
-
-    fn lex_int(&mut self, line: usize, col: usize) -> Result<Token, ParseError> {
-        let mut text = String::new();
-        while let Some(c) = self.peek() {
-            if c.is_ascii_digit() {
-                text.push(c);
-                self.bump();
-            } else {
-                break;
-            }
-        }
-        match text.parse::<i32>() {
-            Ok(n) => Ok(tok(TokenKind::Int(n), line, col)),
-            Err(_) => Err(err("integer literal is too large", line, col)),
-        }
-    }
-
-    fn lex_ident(&mut self, line: usize, col: usize) -> Token {
-        let mut text = String::new();
-        while let Some(c) = self.peek() {
-            if is_ident_continue(c) {
-                text.push(c);
-                self.bump();
-            } else {
-                break;
-            }
-        }
-        tok(TokenKind::Ident(text), line, col)
-    }
-
-    fn lex_string(&mut self, line: usize, col: usize) -> Result<Token, ParseError> {
-        self.bump(); // opening "
-        let mut text = String::new();
-        while let Some(c) = self.peek() {
-            match c {
-                '"' => {
-                    self.bump();
-                    return Ok(tok(TokenKind::String(text), line, col));
-                }
-                '\\' => {
-                    self.bump();
-                    match self.peek() {
-                        Some('"') => {
-                            self.bump();
-                            text.push('"');
-                        }
-                        Some('\\') => {
-                            self.bump();
-                            text.push('\\');
-                        }
-                        Some(other) => {
-                            return Err(err(
-                                format!("invalid escape sequence '\\{}'", other),
-                                self.line,
-                                self.col,
-                            ));
-                        }
-                        None => {
-                            return Err(err("unterminated string literal", line, col));
-                        }
-                    }
-                }
-                '\n' => {
-                    return Err(err("unterminated string literal", line, col));
-                }
-                other => {
-                    text.push(other);
-                    self.bump();
-                }
-            }
-        }
-        Err(err("unterminated string literal", line, col))
-    }
-
-    fn peek(&mut self) -> Option<char> {
-        if self.peeked.is_none() {
-            self.peeked = self.chars.next();
-        }
-        self.peeked
-    }
-
-    fn bump(&mut self) -> Option<char> {
-        let ch = match self.peeked.take() {
-            Some(c) => Some(c),
-            None => self.chars.next(),
-        }?;
-        if ch == '\n' {
-            self.line += 1;
-            self.col = 1;
-        } else {
-            self.col += 1;
-        }
-        Some(ch)
-    }
-}
-
-fn is_ident_start(c: char) -> bool {
-    c == '_' || c.is_alphabetic()
-}
-
-fn is_ident_continue(c: char) -> bool {
-    c == '_' || c == '\'' || c == '?' || c == '!' || c == '-' || c.is_alphanumeric()
-}
-
-fn tok(kind: TokenKind, line: usize, col: usize) -> Token {
-    Token { kind, line, col }
-}
-
-fn err(message: impl Into<String>, line: usize, col: usize) -> ParseError {
-    ParseError {
-        message: message.into(),
-        line,
-        col,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Parser state
-// ---------------------------------------------------------------------------
-
-struct Parser {
+pub(super) struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    term_env: Vec<Name>,
-    ivar_env: Vec<Name>,
-    global_env: Vec<Name>,
-    datatypes: Vec<Datatype>,
+    pub(super) term_env: Vec<Name>,
+    pub(super) ivar_env: Vec<Name>,
+    pub(super) global_env: Vec<Name>,
+    pub(super) datatypes: Vec<Datatype>,
     /// When true, `starts_atom` treats the keyword `with` as a stop token.
     stop_at_with: bool,
     /// When true, `starts_atom` treats the keyword `in` as a stop token.
@@ -465,7 +21,7 @@ struct Parser {
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
+    pub(super) fn new(tokens: Vec<Token>) -> Self {
         Self {
             tokens,
             pos: 0,
@@ -500,12 +56,12 @@ impl Parser {
         Ok(decls)
     }
 
-    fn parse_import(&mut self) -> Result<Decl, ParseError> {
+    pub(super) fn parse_import(&mut self) -> Result<Decl, ParseError> {
         let path = self.expect_string("expected string literal after 'import'")?;
         Ok(Decl::Import { path })
     }
 
-    fn parse_def(&mut self) -> Result<Decl, ParseError> {
+    pub(super) fn parse_def(&mut self) -> Result<Decl, ParseError> {
         let name = self.expect_ident("expected definition name")?;
         self.expect(
             TokenKind::Colon,
@@ -520,7 +76,7 @@ impl Parser {
         Ok(Decl::Def { name, ty, val })
     }
 
-    fn parse_data_decl(&mut self) -> Result<Decl, ParseError> {
+    pub(super) fn parse_data_decl(&mut self) -> Result<Decl, ParseError> {
         let name = self.expect_ident("expected datatype name")?;
         self.expect(
             TokenKind::Equals,
@@ -614,7 +170,7 @@ impl Parser {
         term
     }
 
-    fn parse_term(&mut self) -> Result<Term, ParseError> {
+    pub(super) fn parse_term(&mut self) -> Result<Term, ParseError> {
         self.parse_lambda()
     }
 
@@ -723,10 +279,14 @@ impl Parser {
     fn parse_arrow_star(&mut self) -> Result<Term, ParseError> {
         let left = self.parse_join()?;
         if self.consume(&TokenKind::Arrow) {
+            self.term_env.insert(0, "_".to_string());
             let right = self.parse_arrow_star()?;
+            self.term_env.remove(0);
             Ok(Term::TPi("_".to_string(), Box::new(left), Box::new(right)))
         } else if self.consume(&TokenKind::Star) {
+            self.term_env.insert(0, "_".to_string());
             let right = self.parse_arrow_star()?;
+            self.term_env.remove(0);
             Ok(Term::TSigma(
                 "_".to_string(),
                 Box::new(left),
@@ -1179,7 +739,7 @@ impl Parser {
         }
     }
 
-    fn consume_ident(&mut self, expected: &str) -> bool {
+    pub(super) fn consume_ident(&mut self, expected: &str) -> bool {
         match &self.peek().kind {
             TokenKind::Ident(name) if name == expected => {
                 self.pos += 1;
@@ -1198,7 +758,7 @@ impl Parser {
         }
     }
 
-    fn expect(
+    pub(super) fn expect(
         &mut self,
         expected: TokenKind,
         message: impl Into<String>,
@@ -1210,7 +770,7 @@ impl Parser {
         }
     }
 
-    fn at(&self, expected: &TokenKind) -> bool {
+    pub(super) fn at(&self, expected: &TokenKind) -> bool {
         std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(expected)
     }
 
@@ -1218,7 +778,7 @@ impl Parser {
         &self.tokens[self.pos]
     }
 
-    fn error_here(&self, message: impl Into<String>) -> ParseError {
+    pub(super) fn error_here(&self, message: impl Into<String>) -> ParseError {
         let token = self.peek();
         err(message, token.line, token.col)
     }
@@ -1278,304 +838,5 @@ fn describe(kind: &TokenKind) -> String {
         TokenKind::Equals => "'='".to_string(),
         TokenKind::String(s) => format!("\"{}\"", s),
         TokenKind::Eof => "end of input".to_string(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::cubical::syntax::show_term;
-
-    #[test]
-    fn parses_lambda_identity() {
-        assert_eq!(
-            parse_term("\\x. x").unwrap(),
-            Term::TAbs("x".to_string(), Box::new(Term::TVar(0)))
-        );
-    }
-
-    #[test]
-    fn parses_dependent_pi() {
-        assert_eq!(
-            parse_term("(x : U0) -> x").unwrap(),
-            Term::TPi(
-                "x".to_string(),
-                Box::new(Term::TUniv(0)),
-                Box::new(Term::TVar(0))
-            )
-        );
-    }
-
-    #[test]
-    fn parses_path_lambda() {
-        assert_eq!(
-            parse_term("<i> i0").unwrap(),
-            Term::PLam("i".to_string(), Box::new(Term::TInterval(I::I0)))
-        );
-    }
-
-    #[test]
-    fn parses_path_application() {
-        let mut parser = Parser::new(Lexer::new("p @ i0").lex().unwrap());
-        parser.term_env.push("p".to_string());
-        let term = parser.parse_term().unwrap();
-        assert_eq!(
-            term,
-            Term::PApp(Box::new(Term::TVar(0)), Box::new(Term::TInterval(I::I0)))
-        );
-    }
-
-    #[test]
-    fn parses_import_declaration() {
-        let decls = parse_program("import \"foo.uwuc\"").unwrap();
-        assert_eq!(decls.len(), 1);
-        match &decls[0] {
-            Decl::Import { path } => assert_eq!(path, "foo.uwuc"),
-            _ => panic!("expected import declaration"),
-        }
-    }
-
-    #[test]
-    fn parses_string_literal_with_escapes() {
-        let tokens = Lexer::new("\"foo\\\"bar\\\\baz\"").lex().unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::String("foo\"bar\\baz".to_string()));
-    }
-
-    #[test]
-    fn import_without_string_is_parse_error() {
-        let err = parse_program("import foo").unwrap_err();
-        assert!(err.message.contains("string literal"));
-    }
-
-    #[test]
-    fn typecheck_program_rejects_import() {
-        let err = typecheck_program("import \"foo.uwuc\"").unwrap_err();
-        assert!(err.contains("import requires a file path"));
-    }
-
-    #[test]
-    fn parses_nat_declaration() {
-        let decls = parse_program("data Nat = | zero : Nat | suc : Nat -> Nat").unwrap();
-        assert_eq!(decls.len(), 1);
-        match &decls[0] {
-            Decl::Data(dt) => {
-                assert_eq!(dt.name, "Nat");
-                assert_eq!(dt.cons.len(), 2);
-                assert_eq!(dt.cons[0].name, "zero");
-                assert_eq!(dt.cons[1].name, "suc");
-                assert_eq!(dt.cons[1].arg_tys, vec![Term::TData("Nat".to_string())]);
-            }
-            _ => panic!("expected data declaration"),
-        }
-    }
-
-    #[test]
-    fn parses_def_then_data() {
-        let src = "def main : U1 = U0\ndata Nat = | zero : Nat | suc : Nat -> Nat";
-        let decls = parse_program(src).unwrap();
-        assert_eq!(decls.len(), 2);
-        match &decls[0] {
-            Decl::Def { name, .. } => assert_eq!(name, "main"),
-            _ => panic!("expected def declaration"),
-        }
-        match &decls[1] {
-            Decl::Data(dt) => assert_eq!(dt.name, "Nat"),
-            _ => panic!("expected data declaration"),
-        }
-    }
-
-    #[test]
-    fn parses_data_then_def() {
-        let src = "data Nat = | zero : Nat | suc : Nat -> Nat\ndef main : U1 = U0";
-        let decls = parse_program(src).unwrap();
-        assert_eq!(decls.len(), 2);
-        match &decls[0] {
-            Decl::Data(dt) => assert_eq!(dt.name, "Nat"),
-            _ => panic!("expected data declaration"),
-        }
-        match &decls[1] {
-            Decl::Def { name, .. } => assert_eq!(name, "main"),
-            _ => panic!("expected def declaration"),
-        }
-    }
-
-    #[test]
-    fn parses_two_defs() {
-        let src = "def a : U0 = U0\ndef b : U0 = U0";
-        let decls = parse_program(src).unwrap();
-        assert_eq!(decls.len(), 2);
-        match &decls[0] {
-            Decl::Def { name, .. } => assert_eq!(name, "a"),
-            _ => panic!("expected def declaration"),
-        }
-        match &decls[1] {
-            Decl::Def { name, .. } => assert_eq!(name, "b"),
-            _ => panic!("expected def declaration"),
-        }
-    }
-
-    #[test]
-    fn parses_eliminator() {
-        let src = "elim motive { | zero => body0 | suc n => body1 } scrutinee";
-        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
-        parser.global_env = vec![
-            "scrutinee".to_string(),
-            "body1".to_string(),
-            "body0".to_string(),
-            "motive".to_string(),
-        ];
-        let term = parser.parse_term().unwrap();
-        match term {
-            Term::TElim(_, cases, _) => {
-                assert_eq!(cases.len(), 2);
-                assert_eq!(cases[0].con, "zero");
-                assert_eq!(cases[1].con, "suc");
-                assert_eq!(cases[1].binders, vec!["n".to_string()]);
-            }
-            _ => panic!("expected eliminator"),
-        }
-    }
-
-    #[test]
-    fn parses_match() {
-        let src = "match n return Nat with | zero => z | suc m => s";
-        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
-        parser.global_env = vec![
-            "s".to_string(),
-            "z".to_string(),
-            "Nat".to_string(),
-            "n".to_string(),
-        ];
-        let term = parser.parse_term().unwrap();
-        match term {
-            Term::TElim(motive, cases, scrut) => {
-                assert_eq!(*scrut, Term::TVar(3));
-                assert_eq!(*motive, Term::TAbs("n".to_string(), Box::new(Term::TVar(3))));
-                assert_eq!(cases.len(), 2);
-                assert_eq!(cases[0].con, "zero");
-                assert_eq!(cases[0].binders, Vec::<String>::new());
-                assert_eq!(cases[1].con, "suc");
-                assert_eq!(cases[1].binders, vec!["m".to_string()]);
-            }
-            _ => panic!("expected match to desugar to eliminator"),
-        }
-    }
-
-    #[test]
-    fn parses_match_with_braced_cases() {
-        let src = "match n return Nat with { | zero => z | suc m => s }";
-        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
-        parser.global_env = vec![
-            "s".to_string(),
-            "z".to_string(),
-            "Nat".to_string(),
-            "n".to_string(),
-        ];
-        let term = parser.parse_term().unwrap();
-        assert!(matches!(term, Term::TElim(_, _, _)));
-    }
-
-    #[test]
-    fn parses_match_dependent_return_type() {
-        let src = "match n return n with | zero => z | suc m => s";
-        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
-        parser.global_env = vec![
-            "s".to_string(),
-            "z".to_string(),
-            "n".to_string(),
-        ];
-        let term = parser.parse_term().unwrap();
-        match term {
-            Term::TElim(motive, _, _) => {
-                assert_eq!(
-                    *motive,
-                    Term::TAbs("n".to_string(), Box::new(Term::TVar(0)))
-                );
-            }
-            _ => panic!("expected match to desugar to eliminator"),
-        }
-    }
-
-    #[test]
-    fn match_desugars_to_equivalent_elim() {
-        let src = "match n return Nat with | zero => z | suc m => s";
-        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
-        parser.global_env = vec![
-            "s".to_string(),
-            "z".to_string(),
-            "Nat".to_string(),
-            "n".to_string(),
-        ];
-        let from_match = parser.parse_term().unwrap();
-
-        let elim_src = "elim (\\n. Nat) { | zero => z | suc m => s } n";
-        let mut elim_parser = Parser::new(Lexer::new(elim_src).lex().unwrap());
-        elim_parser.global_env = vec![
-            "s".to_string(),
-            "z".to_string(),
-            "Nat".to_string(),
-            "n".to_string(),
-        ];
-        let from_elim = elim_parser.parse_term().unwrap();
-
-        assert_eq!(from_match, from_elim);
-    }
-
-    fn parse_let_with_globals(src: &str, globals: &[&str]) -> Term {
-        let mut parser = Parser::new(Lexer::new(src).lex().unwrap());
-        parser.global_env = globals.iter().map(|s| s.to_string()).collect();
-        parser.parse_term().unwrap()
-    }
-
-    #[test]
-    fn parses_let() {
-        let term = parse_let_with_globals("let x = t in x", &["t"]);
-        assert_eq!(
-            term,
-            Term::TApp(
-                Box::new(Term::TAbs("x".to_string(), Box::new(Term::TVar(0)))),
-                Box::new(Term::TVar(0))
-            )
-        );
-    }
-
-    #[test]
-    fn let_desugars_to_application_of_lambda() {
-        let from_let = parse_let_with_globals("let x = a in b", &["a", "b"]);
-
-        let mut parser = Parser::new(Lexer::new("(\\x. b) a").lex().unwrap());
-        parser.global_env = vec!["a".to_string(), "b".to_string()];
-        let from_lambda = parser.parse_term().unwrap();
-
-        assert_eq!(from_let, from_lambda);
-    }
-
-    #[test]
-    fn parses_s1_declaration() {
-        let decls = parse_program("data S1 = | base : S1 | loop : S1 [ base , base ]").unwrap();
-        match &decls[0] {
-            Decl::Data(dt) => {
-                assert_eq!(dt.name, "S1");
-                assert_eq!(dt.cons.len(), 1);
-                assert_eq!(dt.pcons.len(), 1);
-                assert_eq!(
-                    dt.pcons[0].face0,
-                    Term::TCon("S1".to_string(), "base".to_string(), vec![])
-                );
-            }
-            _ => panic!("expected data declaration"),
-        }
-    }
-
-    #[test]
-    fn round_trip_with_show_term() {
-        let term = parse_term("\\x. (x , x)").unwrap();
-        let printed = show_term(&[], &term);
-        let reparsed = parse_term(&printed).unwrap();
-        assert_eq!(term, reparsed);
     }
 }

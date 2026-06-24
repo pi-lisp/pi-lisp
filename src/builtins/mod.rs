@@ -14,7 +14,9 @@ use crate::gc::Heap;
 /// Extracts a number from an Expr, or errors with context.
 pub(crate) fn num(e: &Expr) -> Result<f64, String> {
     match e {
-        Expr::Number(n) => Ok(*n),
+        Expr::Int(n) => Ok(*n as f64),
+        Expr::Float(n) => Ok(*n),
+        Expr::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         other => Err(format!("expected number, got {:?}", other)),
     }
 }

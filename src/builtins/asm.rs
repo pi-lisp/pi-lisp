@@ -500,6 +500,17 @@ fn parse_text_instruction(line: &str) -> Result<Option<Instruction>, String> {
         "pcmpeqw" => { need(2)?; Instruction::Pcmpeqw(op(0)?, op(1)?) }
         "pcmpeqd" => { need(2)?; Instruction::Pcmpeqd(op(0)?, op(1)?) }
 
+        // --- Scalar SSE ---
+        "movsd" => { need(2)?; Instruction::Movsd(op(0)?, op(1)?) }
+        "addsd" => { need(2)?; Instruction::Addsd(op(0)?, op(1)?) }
+        "subsd" => { need(2)?; Instruction::Subsd(op(0)?, op(1)?) }
+        "mulsd" => { need(2)?; Instruction::Mulsd(op(0)?, op(1)?) }
+        "divsd" => { need(2)?; Instruction::Divsd(op(0)?, op(1)?) }
+        "cvtsi2sd" => { need(2)?; Instruction::Cvtsi2sd(op(0)?, op(1)?) }
+        "cvttsd2si" => { need(2)?; Instruction::Cvttsd2si(op(0)?, op(1)?) }
+        "ucomisd" => { need(2)?; Instruction::Ucomisd(op(0)?, op(1)?) }
+        "xorps" => { need(2)?; Instruction::Xorps(op(0)?, op(1)?) }
+
         // NASM section/global directives — silently ignored.
         "section" | "global" | "extern" | "bits" | "default" => return Ok(None),
 
@@ -714,6 +725,34 @@ pub fn register_assembler(env: Env, heap: &mut Heap) {
                         let dst = parse_operand(&parts[1])?;
                         let src = parse_operand(&parts[2])?;
                         Instruction::MovCr(dst, src)
+                    }
+
+                    // --- Scalar SSE ---
+                    "movsd" => {
+                        if parts.len() != 3 {
+                            return Err("movsd: expects 2 operands".into());
+                        }
+                        Instruction::Movsd(parse_operand(&parts[1])?, parse_operand(&parts[2])?)
+                    }
+                    "addsd" | "subsd" | "mulsd" | "divsd"
+                    | "cvtsi2sd" | "cvttsd2si"
+                    | "ucomisd" | "xorps" => {
+                        if parts.len() != 3 {
+                            return Err(format!("{}: expects 2 operands", op));
+                        }
+                        let dst = parse_operand(&parts[1])?;
+                        let src = parse_operand(&parts[2])?;
+                        match op {
+                            "addsd" => Instruction::Addsd(dst, src),
+                            "subsd" => Instruction::Subsd(dst, src),
+                            "mulsd" => Instruction::Mulsd(dst, src),
+                            "divsd" => Instruction::Divsd(dst, src),
+                            "cvtsi2sd" => Instruction::Cvtsi2sd(dst, src),
+                            "cvttsd2si" => Instruction::Cvttsd2si(dst, src),
+                            "ucomisd" => Instruction::Ucomisd(dst, src),
+                            "xorps" => Instruction::Xorps(dst, src),
+                            _ => unreachable!(),
+                        }
                     }
 
                     // --- SSE2 ---

@@ -2,7 +2,7 @@ use crate::tinyasm::{
     assembler::Assembler,
     encoder::{Instruction, MemoryAddr, Operand},
     jit::JitMemory,
-    registers::Register,
+    registers::{Register, XmmRegister},
 };
 use crate::vm::bytecode::{Chunk, Op, Value};
 
@@ -33,7 +33,7 @@ impl JitCompiler {
         let frame_offset_error = 40;
         let frame_offset_tag_ptr = 48;
 
-        // Prologue
+        // Prologue — save callee-saved GPRs
         asm.add_instruction(Instruction::Push(Operand::Reg(Register::RBP)));
         asm.add_instruction(Instruction::Mov(
             Operand::Reg(Register::RBP),
@@ -44,11 +44,26 @@ impl JitCompiler {
         asm.add_instruction(Instruction::Push(Operand::Reg(Register::R13)));
         asm.add_instruction(Instruction::Push(Operand::Reg(Register::R14)));
         asm.add_instruction(Instruction::Push(Operand::Reg(Register::R15)));
-        // align stack to 16 bytes
+        // align stack to 16 bytes and allocate XMM save area (10 × 16 bytes)
+        let xmm_save_size: i32 = 160;
         asm.add_instruction(Instruction::Sub(
             Operand::Reg(Register::RSP),
-            Operand::Imm32(8),
+            Operand::Imm32(8 + xmm_save_size),
         ));
+        // Save callee-saved XMM6–XMM15 (System V AMD64 ABI)
+        let xmm_callee: [XmmRegister; 10] = [
+            XmmRegister::XMM6,  XmmRegister::XMM7,  XmmRegister::XMM8,
+            XmmRegister::XMM9,  XmmRegister::XMM10, XmmRegister::XMM11,
+            XmmRegister::XMM12, XmmRegister::XMM13, XmmRegister::XMM14,
+            XmmRegister::XMM15,
+        ];
+        for (i, xmm) in xmm_callee.iter().enumerate() {
+            let offset: i32 = (i as i32) * 16;
+            asm.add_instruction(Instruction::Movdqa(
+                Operand::Mem(MemoryAddr::base_disp(Register::RSP, offset)),
+                Operand::Xmm(*xmm),
+            ));
+        }
 
         // Load fields from JitFrame (RDI)
         asm.add_instruction(Instruction::Mov(
@@ -376,10 +391,25 @@ impl JitCompiler {
             Operand::Reg(Register::R12),
         ));
 
+        // Restore callee-saved XMM6–XMM15
+        let xmm_callee: [XmmRegister; 10] = [
+            XmmRegister::XMM6,  XmmRegister::XMM7,  XmmRegister::XMM8,
+            XmmRegister::XMM9,  XmmRegister::XMM10, XmmRegister::XMM11,
+            XmmRegister::XMM12, XmmRegister::XMM13, XmmRegister::XMM14,
+            XmmRegister::XMM15,
+        ];
+        for (i, xmm) in xmm_callee.iter().enumerate() {
+            let offset: i32 = (i as i32) * 16;
+            asm.add_instruction(Instruction::Movdqa(
+                Operand::Xmm(*xmm),
+                Operand::Mem(MemoryAddr::base_disp(Register::RSP, offset)),
+            ));
+        }
+        // Free XMM save area + unalign stack
         asm.add_instruction(Instruction::Add(
             Operand::Reg(Register::RSP),
-            Operand::Imm32(8),
-        )); // unalign stack
+            Operand::Imm32(8 + xmm_save_size),
+        ));
         asm.add_instruction(Instruction::Pop(Operand::Reg(Register::R15)));
         asm.add_instruction(Instruction::Pop(Operand::Reg(Register::R14)));
         asm.add_instruction(Instruction::Pop(Operand::Reg(Register::R13)));

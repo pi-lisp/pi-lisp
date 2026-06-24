@@ -162,6 +162,18 @@ pub enum Instruction {
     Pcmpeqw(Operand, Operand),
     Pcmpeqd(Operand, Operand),
 
+    // Scalar SSE (double-precision float)
+    Movsd(Operand, Operand),
+    Addsd(Operand, Operand),
+    Subsd(Operand, Operand),
+    Mulsd(Operand, Operand),
+    Divsd(Operand, Operand),
+    Cvtsi2sd(Operand, Operand),
+    Cvttsd2si(Operand, Operand),
+    Ucomisd(Operand, Operand),
+    /// Xorps — bitwise XOR (often used to zero XMM via xorps xmm, xmm).  No prefix.
+    Xorps(Operand, Operand),
+
     // Labels and label-targeted jumps — resolved by Assembler, not Encoder.
     Label(String),
     JmpLabel(String),
@@ -213,6 +225,15 @@ impl fmt::Display for Instruction {
             Instruction::Pcmpeqb(d, s) => write!(f, "pcmpeqb {}, {}", d, s),
             Instruction::Pcmpeqw(d, s) => write!(f, "pcmpeqw {}, {}", d, s),
             Instruction::Pcmpeqd(d, s) => write!(f, "pcmpeqd {}, {}", d, s),
+            Instruction::Movsd(d, s) => write!(f, "movsd {}, {}", d, s),
+            Instruction::Addsd(d, s) => write!(f, "addsd {}, {}", d, s),
+            Instruction::Subsd(d, s) => write!(f, "subsd {}, {}", d, s),
+            Instruction::Mulsd(d, s) => write!(f, "mulsd {}, {}", d, s),
+            Instruction::Divsd(d, s) => write!(f, "divsd {}, {}", d, s),
+            Instruction::Cvtsi2sd(d, s) => write!(f, "cvtsi2sd {}, {}", d, s),
+            Instruction::Cvttsd2si(d, s) => write!(f, "cvttsd2si {}, {}", d, s),
+            Instruction::Ucomisd(d, s) => write!(f, "ucomisd {}, {}", d, s),
+            Instruction::Xorps(d, s) => write!(f, "xorps {}, {}", d, s),
             Instruction::Label(n) => write!(f, "{}:", n),
             Instruction::JmpLabel(t) => write!(f, "jmp {}", t),
             Instruction::JeLabel(t) => write!(f, "je {}", t),
@@ -378,6 +399,17 @@ pub fn encode_instruction(instr: Instruction) -> Result<Vec<u8>, EncodeError> {
         Instruction::Pcmpeqb(d, s) => encode_sse_alu(0x74, d, s, &mut bytes)?,
         Instruction::Pcmpeqw(d, s) => encode_sse_alu(0x75, d, s, &mut bytes)?,
         Instruction::Pcmpeqd(d, s) => encode_sse_alu(0x76, d, s, &mut bytes)?,
+
+        // Scalar SSE (double-precision float)
+        Instruction::Movsd(d, s) => encode_sse_scalar_move(d, s, &mut bytes)?,
+        Instruction::Addsd(d, s) => encode_sse_scalar_alu(0xF2, 0x58, d, s, &mut bytes)?,
+        Instruction::Subsd(d, s) => encode_sse_scalar_alu(0xF2, 0x5C, d, s, &mut bytes)?,
+        Instruction::Mulsd(d, s) => encode_sse_scalar_alu(0xF2, 0x59, d, s, &mut bytes)?,
+        Instruction::Divsd(d, s) => encode_sse_scalar_alu(0xF2, 0x5E, d, s, &mut bytes)?,
+        Instruction::Cvtsi2sd(d, s) => encode_cvtsi2sd(d, s, &mut bytes)?,
+        Instruction::Cvttsd2si(d, s) => encode_cvttsd2si(d, s, &mut bytes)?,
+        Instruction::Ucomisd(d, s) => encode_sse_scalar_alu(0x66, 0x2E, d, s, &mut bytes)?,
+        Instruction::Xorps(d, s) => encode_sse_scalar_alu(0x00, 0x57, d, s, &mut bytes)?,
 
         // Control flow
         Instruction::Call(op) => encode_call(op, &mut bytes)?,
@@ -964,6 +996,177 @@ fn encode_sse_move(
         _ => {
             return Err(EncodeError::UnsupportedOperand(
                 "SSE move: invalid operand combination".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Scalar SSE ALU (Addsd, Subsd, Mulsd, Divsd, Ucomisd, Xorps)
+// ---------------------------------------------------------------------------
+//
+// Pattern: [prefix] 0F <opcode> /r
+//   F2 prefix → Addsd / Subsd / Mulsd / Divsd
+//   66 prefix → Ucomisd
+//   no prefix → Xorps
+
+fn encode_sse_scalar_alu(
+    prefix: u8,
+    opcode: u8,
+    dst: Operand,
+    src: Operand,
+    bytes: &mut Vec<u8>,
+) -> Result<(), EncodeError> {
+    match (dst, src) {
+        (Operand::Xmm(dst_r), Operand::Xmm(src_r)) => {
+            let rex_r = dst_r.is_extended();
+            let rex_b = src_r.is_extended();
+            bytes.push(rex(rex_r, false, rex_b));
+            if prefix != 0 {
+                bytes.push(prefix);
+            }
+            bytes.extend_from_slice(&[0x0F, opcode]);
+            bytes.push(0xC0 | (dst_r.code() << 3) | src_r.code());
+        }
+        (Operand::Xmm(dst_r), Operand::Mem(mem)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(dst_r.code(), mem)?;
+            bytes.push(rex(dst_r.is_extended(), rex_x, rex_b));
+            if prefix != 0 {
+                bytes.push(prefix);
+            }
+            bytes.extend_from_slice(&[0x0F, opcode]);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "SSE scalar ALU: destination must be XMM, source XMM or memory".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Movsd (Move Scalar Double)
+// ---------------------------------------------------------------------------
+//
+// Encoding:
+//   movsd xmm1, xmm2/m64  →  F2 0F 10 /r   (load)
+//   movsd xmm2/m64, xmm1  →  F2 0F 11 /r   (store)
+
+fn encode_sse_scalar_move(
+    dst: Operand,
+    src: Operand,
+    bytes: &mut Vec<u8>,
+) -> Result<(), EncodeError> {
+    match (dst, src) {
+        (Operand::Xmm(dst_r), Operand::Xmm(src_r)) => {
+            let rex_r = dst_r.is_extended();
+            let rex_b = src_r.is_extended();
+            bytes.push(rex(rex_r, false, rex_b));
+            bytes.extend_from_slice(&[0xF2, 0x0F, 0x10]);
+            bytes.push(0xC0 | (dst_r.code() << 3) | src_r.code());
+        }
+        (Operand::Xmm(dst_r), Operand::Mem(mem)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(dst_r.code(), mem)?;
+            bytes.push(rex(dst_r.is_extended(), rex_x, rex_b));
+            bytes.extend_from_slice(&[0xF2, 0x0F, 0x10]);
+            bytes.push(modrm);
+            if let Some(s) = sib { bytes.push(s); }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        (Operand::Mem(mem), Operand::Xmm(src_r)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(src_r.code(), mem)?;
+            bytes.push(rex(src_r.is_extended(), rex_x, rex_b));
+            bytes.extend_from_slice(&[0xF2, 0x0F, 0x11]);
+            bytes.push(modrm);
+            if let Some(s) = sib { bytes.push(s); }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "Movsd: invalid operand combination".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cvtsi2sd (convert int32/int64 to double)
+// ---------------------------------------------------------------------------
+//
+// Encoding:
+//   cvtsi2sd xmm1, r/m32   →  F2 0F 2A /r
+//   cvtsi2sd xmm1, r/m64   →  F2 REX.W 0F 2A /r
+
+fn encode_cvtsi2sd(
+    dst: Operand,
+    src: Operand,
+    bytes: &mut Vec<u8>,
+) -> Result<(), EncodeError> {
+    match (dst, src) {
+        (Operand::Xmm(dst_r), Operand::Reg(src_r)) => {
+            let rex_r = dst_r.is_extended();
+            let rex_b = src_r.is_extended();
+            bytes.push(rex_w(rex_r, false, rex_b));
+            bytes.extend_from_slice(&[0xF2, 0x0F, 0x2A]);
+            bytes.push(0xC0 | (dst_r.code() << 3) | src_r.code());
+        }
+        (Operand::Xmm(dst_r), Operand::Mem(mem)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(dst_r.code(), mem)?;
+            bytes.push(rex_w(dst_r.is_extended(), rex_x, rex_b));
+            bytes.extend_from_slice(&[0xF2, 0x0F, 0x2A]);
+            bytes.push(modrm);
+            if let Some(s) = sib { bytes.push(s); }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "Cvtsi2sd: destination must be XMM, source GPR or memory".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cvttsd2si (truncate double to int32/int64)
+// ---------------------------------------------------------------------------
+//
+// Encoding:
+//   cvttsd2si r32, xmm2/m64  →  F2 0F 2C /r
+//   cvttsd2si r64, xmm2/m64  →  F2 REX.W 0F 2C /r
+
+fn encode_cvttsd2si(
+    dst: Operand,
+    src: Operand,
+    bytes: &mut Vec<u8>,
+) -> Result<(), EncodeError> {
+    match (dst, src) {
+        (Operand::Reg(dst_r), Operand::Xmm(src_r)) => {
+            let rex_r = src_r.is_extended();
+            let rex_b = dst_r.is_extended();
+            bytes.push(rex_w(rex_r, false, rex_b));
+            bytes.extend_from_slice(&[0xF2, 0x0F, 0x2C]);
+            bytes.push(0xC0 | (src_r.code() << 3) | dst_r.code());
+        }
+        (Operand::Reg(dst_r), Operand::Mem(mem)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(dst_r.code(), mem)?;
+            bytes.push(rex_w(false, rex_x, rex_b));
+            bytes.extend_from_slice(&[0xF2, 0x0F, 0x2C]);
+            bytes.push(modrm);
+            if let Some(s) = sib { bytes.push(s); }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "Cvttsd2si: destination must be GPR, source XMM or memory".into(),
             ));
         }
     }

@@ -160,9 +160,15 @@ pub unsafe extern "C" fn jit_helper_load_var(
     match vm.heap_mut().env_get(frame.env, name) {
         Ok(expr) => match crate::vm::machine::expr_to_vm_value(&expr, vm.heap_mut()) {
             Ok(val) => frame.push_val(val),
-            Err(_) => frame.error = "JIT LoadVar expr error\0".as_ptr(),
+            Err(_) => {
+                frame.error = "JIT LoadVar expr error\0".as_ptr();
+                frame.push_val(crate::vm::machine::VmValue::Nil);
+            }
         },
-        Err(_) => frame.error = "JIT LoadVar undefined variable\0".as_ptr(),
+        Err(_) => {
+            frame.error = "JIT LoadVar undefined variable\0".as_ptr();
+            frame.push_val(crate::vm::machine::VmValue::Nil);
+        },
     }
 }
 

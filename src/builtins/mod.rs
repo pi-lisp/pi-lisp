@@ -99,4 +99,27 @@ fn register_load_ctt(env: Env, heap: &mut Heap) {
             ]))
         })),
     );
+
+    env_set(
+        heap,
+        env,
+        "eval-pic".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 1 {
+                return Err(format!("eval-pic: expected 1 argument, got {}", args.len()));
+            }
+            let source = match &args[0] {
+                Expr::Str(s) => s.clone(),
+                other => return Err(format!(
+                    "eval-pic: argument must be a string, got {:?}", other
+                )),
+            };
+            let output = cubical::run_str(&source).map_err(|e| e.to_string())?;
+            Ok(Expr::List(vec![
+                Expr::Str(output.name),
+                Expr::CubicalTerm(Box::new(output.ty)),
+                Expr::CubicalTerm(Box::new(output.value)),
+            ]))
+        })),
+    );
 }

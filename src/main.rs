@@ -114,7 +114,7 @@ fn main() {
                     process::exit(1);
                 }
                 match cubical::run(&args[i]) {
-                    Ok(output) => println!("=> {:?}", output),
+                    Ok(output) => println!("{}", output),
                     Err(err) => eprintln!("Cubical error: {}", err),
                 }
             } else if args[i] == "--cubical-transpile" {
@@ -169,6 +169,18 @@ fn main() {
                 }
             } else {
                 let file_path = &args[i];
+                let path = Path::new(file_path);
+
+                // Auto-detect .pic files and route to cubical mode
+                if path.extension().and_then(|s| s.to_str()) == Some("pic") {
+                    match cubical::run(file_path) {
+                        Ok(output) => println!("{}", output),
+                        Err(err) => eprintln!("Cubical error: {}", err),
+                    }
+                    i += 1;
+                    continue;
+                }
+
                 let src = match fs::read_to_string(file_path) {
                     Ok(content) => content,
                     Err(err) => {
@@ -179,7 +191,7 @@ fn main() {
                         process::exit(1);
                     }
                 };
-                let base = Path::new(file_path).parent();
+                let base = path.parent();
                 with_import_base(base, || run(&src, global_env, &mut heap));
 
                 #[cfg(feature = "vm")]

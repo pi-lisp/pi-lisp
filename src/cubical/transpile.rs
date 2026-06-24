@@ -1,4 +1,4 @@
-//! Transpile `.uwuc` cubical surface programs to type-erased Python.
+//! Transpile `.pic` cubical surface programs to type-erased Python.
 
 mod python;
 
@@ -61,7 +61,7 @@ struct ParsedFile {
     decls: Vec<Decl>,
 }
 
-/// Read and transpile a `.uwuc` file and its import closure.
+/// Read and transpile a `.pic` file and its import closure.
 pub fn transpile(path: impl AsRef<Path>) -> Result<TranspileOutput, TranspileError> {
     let path = path.as_ref();
     let source = std::fs::read_to_string(path)?;
@@ -87,7 +87,7 @@ pub fn transpile_source(root_path: &Path, source: &str) -> Result<TranspileOutpu
             .uwuc_path
             .file_name()
             .and_then(|s| s.to_str())
-            .unwrap_or("input.uwuc");
+            .unwrap_or("input.pic");
         let py_source = emit_module(&mut ctx, &file.decls, source_comment);
         modules.push(EmittedModule {
             path: py_path_from_uwuc_path(&file.uwuc_path),
@@ -111,7 +111,7 @@ pub fn transpile_source(root_path: &Path, source: &str) -> Result<TranspileOutpu
             let root_comment = root_path
                 .file_name()
                 .and_then(|s| s.to_str())
-                .unwrap_or("input.uwuc");
+                .unwrap_or("input.pic");
             let driver = emit_main_driver(
                 root_comment,
                 &entry_module,
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn transpiles_nat_module() {
-        let out = transpile("Nat.uwuc").expect("Nat.uwuc should transpile");
+        let out = transpile("Nat.pic").expect("Nat.pic should transpile");
         assert_eq!(out.modules.len(), 1);
         let nat = &out.modules[0].source;
         assert!(nat.contains("Zero = (\"Zero\",)"));
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn transpiles_hello_with_import() {
-        let out = transpile("hello.uwuc").expect("hello.uwuc should transpile");
+        let out = transpile("hello.pic").expect("hello.pic should transpile");
         assert_eq!(out.modules.len(), 3);
         let hello = out
             .modules
@@ -309,15 +309,15 @@ mod tests {
             std::env::temp_dir().join(format!("cubical_transpile_cycle_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
 
-        let a_path = dir.join("a.uwuc");
-        let b_path = dir.join("b.uwuc");
+        let a_path = dir.join("a.pic");
+        let b_path = dir.join("b.pic");
 
         let mut a_file = fs::File::create(&a_path).unwrap();
-        writeln!(a_file, "import \"b.uwuc\"").unwrap();
+        writeln!(a_file, "import \"b.pic\"").unwrap();
         writeln!(a_file, "def a : U0 = U0").unwrap();
 
         let mut b_file = fs::File::create(&b_path).unwrap();
-        writeln!(b_file, "import \"a.uwuc\"").unwrap();
+        writeln!(b_file, "import \"a.pic\"").unwrap();
         writeln!(b_file, "def b : U0 = U0").unwrap();
 
         let err = transpile(&a_path).unwrap_err();
@@ -330,7 +330,7 @@ mod tests {
     fn write_output_creates_files() {
         let dir =
             std::env::temp_dir().join(format!("cubical_transpile_out_{}", std::process::id()));
-        let out = transpile("hello.uwuc").unwrap();
+        let out = transpile("hello.pic").unwrap();
         write_output(&out, &dir).unwrap();
         assert!(dir.join("nat.py").exists());
         assert!(dir.join("hello.py").exists());
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn transpile_erases_cubical_terms_to_plain_python() {
         let src = "def x : I = i0\n";
-        let out = transpile_source(Path::new("test.uwuc"), src).expect("should transpile");
+        let out = transpile_source(Path::new("test.pic"), src).expect("should transpile");
         assert!(out.prelude.is_none());
         let test_mod = &out.modules[0].source;
         assert!(!test_mod.contains("i0"));

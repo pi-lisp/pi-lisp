@@ -356,7 +356,7 @@ pub fn capitalize_ident(name: &str) -> String {
     }
 }
 
-/// Python module name for a `.uwuc` file (`Nat.uwuc` → `Nat`).
+/// Python module name for a `.pic` file (`Nat.pic` → `Nat`).
 pub fn module_name_from_path(path: &std::path::Path) -> String {
     let name = path
         .file_stem()
@@ -513,7 +513,7 @@ mod tests {
         let out = emit_module(
             &mut PythonModuleCtx::from_decls("Nat".to_string(), &decls),
             &decls,
-            "Nat.uwuc",
+            "Nat.pic",
         );
         assert!(out.contains("Zero = (\"Zero\",)"));
         assert!(out.contains("Suc = lambda a0: (\"Suc\", a0)"));

@@ -1,4 +1,4 @@
-use crate::tinyasm::registers::Register;
+use crate::tinyasm::registers::{ControlRegister, Register, XmmRegister};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -79,6 +79,8 @@ impl fmt::Display for MemoryAddr {
 #[derive(Debug, Clone, Copy)]
 pub enum Operand {
     Reg(Register),
+    Cr(ControlRegister),
+    Xmm(XmmRegister),
     Imm64(u64),
     Imm32(i32),
     Mem(MemoryAddr),
@@ -88,6 +90,8 @@ impl fmt::Display for Operand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Operand::Reg(r) => write!(f, "{}", r),
+            Operand::Cr(c) => write!(f, "{}", c),
+            Operand::Xmm(x) => write!(f, "{}", x),
             Operand::Imm64(v) => write!(f, "0x{:X}", v),
             Operand::Imm32(v) if *v < 0 => write!(f, "{}", v),
             Operand::Imm32(v) => write!(f, "0x{:X}", v),
@@ -109,6 +113,9 @@ pub enum Instruction {
     Lea(Operand, Operand),
     Push(Operand),
     Pop(Operand),
+
+    // Control register MOV
+    MovCr(Operand, Operand),
 
     // Arithmetic
     Add(Operand, Operand),
@@ -134,6 +141,27 @@ pub enum Instruction {
     Ret,
     Syscall,
 
+    // SSE2 data movement
+    Movdqa(Operand, Operand),
+    Movdqu(Operand, Operand),
+    /// SSE2 packed integer arithmetic
+    Paddb(Operand, Operand),
+    Paddw(Operand, Operand),
+    Paddd(Operand, Operand),
+    Paddq(Operand, Operand),
+    Psubb(Operand, Operand),
+    Psubw(Operand, Operand),
+    Psubd(Operand, Operand),
+    Psubq(Operand, Operand),
+    /// SSE2 packed bitwise
+    Pxor(Operand, Operand),
+    Pand(Operand, Operand),
+    Por(Operand, Operand),
+    /// SSE2 packed compare
+    Pcmpeqb(Operand, Operand),
+    Pcmpeqw(Operand, Operand),
+    Pcmpeqd(Operand, Operand),
+
     // Labels and label-targeted jumps — resolved by Assembler, not Encoder.
     Label(String),
     JmpLabel(String),
@@ -152,6 +180,7 @@ impl fmt::Display for Instruction {
             Instruction::Lea(d, s) => write!(f, "lea {}, {}", d, s),
             Instruction::Push(o) => write!(f, "push {}", o),
             Instruction::Pop(o) => write!(f, "pop {}", o),
+            Instruction::MovCr(d, s) => write!(f, "mov {}, {}", d, s),
             Instruction::Add(d, s) => write!(f, "add {}, {}", d, s),
             Instruction::Sub(d, s) => write!(f, "sub {}, {}", d, s),
             Instruction::IMul(d, s) => write!(f, "imul {}, {}", d, s),
@@ -168,6 +197,22 @@ impl fmt::Display for Instruction {
             Instruction::Call(o) => write!(f, "call {}", o),
             Instruction::Ret => write!(f, "ret"),
             Instruction::Syscall => write!(f, "syscall"),
+            Instruction::Movdqa(d, s) => write!(f, "movdqa {}, {}", d, s),
+            Instruction::Movdqu(d, s) => write!(f, "movdqu {}, {}", d, s),
+            Instruction::Paddb(d, s) => write!(f, "paddb {}, {}", d, s),
+            Instruction::Paddw(d, s) => write!(f, "paddw {}, {}", d, s),
+            Instruction::Paddd(d, s) => write!(f, "paddd {}, {}", d, s),
+            Instruction::Paddq(d, s) => write!(f, "paddq {}, {}", d, s),
+            Instruction::Psubb(d, s) => write!(f, "psubb {}, {}", d, s),
+            Instruction::Psubw(d, s) => write!(f, "psubw {}, {}", d, s),
+            Instruction::Psubd(d, s) => write!(f, "psubd {}, {}", d, s),
+            Instruction::Psubq(d, s) => write!(f, "psubq {}, {}", d, s),
+            Instruction::Pxor(d, s) => write!(f, "pxor {}, {}", d, s),
+            Instruction::Pand(d, s) => write!(f, "pand {}, {}", d, s),
+            Instruction::Por(d, s) => write!(f, "por {}, {}", d, s),
+            Instruction::Pcmpeqb(d, s) => write!(f, "pcmpeqb {}, {}", d, s),
+            Instruction::Pcmpeqw(d, s) => write!(f, "pcmpeqw {}, {}", d, s),
+            Instruction::Pcmpeqd(d, s) => write!(f, "pcmpeqd {}, {}", d, s),
             Instruction::Label(n) => write!(f, "{}:", n),
             Instruction::JmpLabel(t) => write!(f, "jmp {}", t),
             Instruction::JeLabel(t) => write!(f, "je {}", t),
@@ -194,6 +239,14 @@ impl fmt::Display for Instruction {
 #[inline]
 fn rex_w(r: bool, x: bool, b: bool) -> u8 {
     0x48 | ((r as u8) << 2) | ((x as u8) << 1) | (b as u8)
+}
+
+/// Builds a REX prefix byte without the W bit (used by SSE instructions).
+///
+/// Bit layout: `0100 0RXB`
+#[inline]
+fn rex(r: bool, x: bool, b: bool) -> u8 {
+    0x40 | ((r as u8) << 2) | ((x as u8) << 1) | (b as u8)
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +340,7 @@ pub fn encode_instruction(instr: Instruction) -> Result<Vec<u8>, EncodeError> {
         Instruction::Lea(dst, src) => encode_lea(dst, src, &mut bytes)?,
         Instruction::Push(op) => encode_push(op, &mut bytes)?,
         Instruction::Pop(op) => encode_pop(op, &mut bytes)?,
+        Instruction::MovCr(dst, src) => encode_mov_cr(dst, src, &mut bytes)?,
 
         // Arithmetic
         Instruction::Add(d, s) => encode_arithmetic(0x01, 0x03, 0, d, s, &mut bytes)?,
@@ -306,6 +360,24 @@ pub fn encode_instruction(instr: Instruction) -> Result<Vec<u8>, EncodeError> {
         // Compare / test
         Instruction::Cmp(d, s) => encode_arithmetic(0x39, 0x3B, 7, d, s, &mut bytes)?,
         Instruction::Test(d, s) => encode_test(d, s, &mut bytes)?,
+
+        // SSE2 data movement
+        Instruction::Movdqa(d, s) => encode_sse_move(0x66, d, s, &mut bytes)?,
+        Instruction::Movdqu(d, s) => encode_sse_move(0xF3, d, s, &mut bytes)?,
+        Instruction::Paddb(d, s) => encode_sse_alu(0xFC, d, s, &mut bytes)?,
+        Instruction::Paddw(d, s) => encode_sse_alu(0xFD, d, s, &mut bytes)?,
+        Instruction::Paddd(d, s) => encode_sse_alu(0xFE, d, s, &mut bytes)?,
+        Instruction::Paddq(d, s) => encode_sse_alu(0xD4, d, s, &mut bytes)?,
+        Instruction::Psubb(d, s) => encode_sse_alu(0xF8, d, s, &mut bytes)?,
+        Instruction::Psubw(d, s) => encode_sse_alu(0xF9, d, s, &mut bytes)?,
+        Instruction::Psubd(d, s) => encode_sse_alu(0xFA, d, s, &mut bytes)?,
+        Instruction::Psubq(d, s) => encode_sse_alu(0xFB, d, s, &mut bytes)?,
+        Instruction::Pxor(d, s) => encode_sse_alu(0xEF, d, s, &mut bytes)?,
+        Instruction::Pand(d, s) => encode_sse_alu(0xDB, d, s, &mut bytes)?,
+        Instruction::Por(d, s) => encode_sse_alu(0xEB, d, s, &mut bytes)?,
+        Instruction::Pcmpeqb(d, s) => encode_sse_alu(0x74, d, s, &mut bytes)?,
+        Instruction::Pcmpeqw(d, s) => encode_sse_alu(0x75, d, s, &mut bytes)?,
+        Instruction::Pcmpeqd(d, s) => encode_sse_alu(0x76, d, s, &mut bytes)?,
 
         // Control flow
         Instruction::Call(op) => encode_call(op, &mut bytes)?,
@@ -771,6 +843,127 @@ fn encode_unary(
         _ => {
             return Err(EncodeError::UnsupportedOperand(
                 "Unary: operand must be register or memory".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// MOV to/from control registers
+// ---------------------------------------------------------------------------
+//
+// Encoding:
+//   MOV r64, crN  →  REX.W 0F 20 /r   (reg field = CR, rm = GPR)
+//   MOV crN, r64  →  REX.W 0F 22 /r   (reg field = CR, rm = GPR)
+
+fn encode_mov_cr(dst: Operand, src: Operand, bytes: &mut Vec<u8>) -> Result<(), EncodeError> {
+    match (dst, src) {
+        // MOV r64, crN  (read control register into GPR)
+        (Operand::Reg(gpr), Operand::Cr(cr)) => {
+            bytes.push(rex_w(cr.is_extended(), false, gpr.is_extended()));
+            bytes.extend_from_slice(&[0x0F, 0x20]);
+            bytes.push(0xC0 | ((cr.code() & 7) << 3) | gpr.code());
+        }
+        // MOV crN, r64  (write GPR to control register)
+        (Operand::Cr(cr), Operand::Reg(gpr)) => {
+            bytes.push(rex_w(cr.is_extended(), false, gpr.is_extended()));
+            bytes.extend_from_slice(&[0x0F, 0x22]);
+            bytes.push(0xC0 | ((cr.code() & 7) << 3) | gpr.code());
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "MOV CR: operands must be (GPR, CR) or (CR, GPR)".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SSE2 ALU (two XMM operands: dst ^= src)
+// ---------------------------------------------------------------------------
+//
+// All follow the pattern: 66 0F <opcode> /r
+// ModR/M: reg = dst, rm = src (or memory).
+
+fn encode_sse_alu(
+    opcode: u8,
+    dst: Operand,
+    src: Operand,
+    bytes: &mut Vec<u8>,
+) -> Result<(), EncodeError> {
+    match (dst, src) {
+        (Operand::Xmm(dst_r), Operand::Xmm(src_r)) => {
+            let rex_r = dst_r.is_extended();
+            let rex_b = src_r.is_extended();
+            bytes.push(rex(rex_r, false, rex_b));
+            bytes.extend_from_slice(&[0x66, 0x0F, opcode]);
+            bytes.push(0xC0 | (dst_r.code() << 3) | src_r.code());
+        }
+        (Operand::Xmm(dst_r), Operand::Mem(mem)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(dst_r.code(), mem)?;
+            bytes.push(rex(dst_r.is_extended(), rex_x, rex_b));
+            bytes.extend_from_slice(&[0x66, 0x0F, opcode]);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "SSE ALU: destination must be XMM, source XMM or memory".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// SSE2 data move (MOVDQA / MOVDQU)
+// ---------------------------------------------------------------------------
+
+fn encode_sse_move(
+    prefix: u8,
+    dst: Operand,
+    src: Operand,
+    bytes: &mut Vec<u8>,
+) -> Result<(), EncodeError> {
+    match (dst, src) {
+        // xmm ← xmm
+        (Operand::Xmm(dst_r), Operand::Xmm(src_r)) => {
+            let rex_r = dst_r.is_extended();
+            let rex_b = src_r.is_extended();
+            bytes.push(rex(rex_r, false, rex_b));
+            bytes.extend_from_slice(&[prefix, 0x0F, 0x6F]);
+            bytes.push(0xC0 | (dst_r.code() << 3) | src_r.code());
+        }
+        // xmm ← [mem]
+        (Operand::Xmm(dst_r), Operand::Mem(mem)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(dst_r.code(), mem)?;
+            bytes.push(rex(dst_r.is_extended(), rex_x, rex_b));
+            bytes.extend_from_slice(&[prefix, 0x0F, 0x6F]);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        // [mem] ← xmm
+        (Operand::Mem(mem), Operand::Xmm(src_r)) => {
+            let (modrm, sib, disp_sz, rex_b, rex_x) = encode_mem_parts(src_r.code(), mem)?;
+            bytes.push(rex(src_r.is_extended(), rex_x, rex_b));
+            bytes.extend_from_slice(&[prefix, 0x0F, 0x7F]);
+            bytes.push(modrm);
+            if let Some(s) = sib {
+                bytes.push(s);
+            }
+            push_displacement(mem.disp, disp_sz, bytes);
+        }
+        _ => {
+            return Err(EncodeError::UnsupportedOperand(
+                "SSE move: invalid operand combination".into(),
             ));
         }
     }

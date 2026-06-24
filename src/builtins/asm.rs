@@ -12,7 +12,7 @@ use crate::{
     env::{Env, env_set},
     expr::Expr,
     gc::Heap,
-    tinyasm::{Assembler, Instruction, JitMemory, MemoryAddr, Operand, Register},
+    tinyasm::{Assembler, ControlRegister, Instruction, JitMemory, MemoryAddr, Operand, Register, XmmRegister},
 };
 
 /// Parse an `Expr::Symbol` into an x86-64 register.
@@ -38,6 +38,40 @@ fn parse_register(s: &str) -> Result<Register, String> {
     }
 }
 
+fn parse_control_register(s: &str) -> Result<ControlRegister, String> {
+    match s.to_uppercase().as_str() {
+        "CR0" => Ok(ControlRegister::CR0),
+        "CR1" => Ok(ControlRegister::CR1),
+        "CR2" => Ok(ControlRegister::CR2),
+        "CR3" => Ok(ControlRegister::CR3),
+        "CR4" => Ok(ControlRegister::CR4),
+        "CR8" => Ok(ControlRegister::CR8),
+        _ => Err(format!("unknown control register: '{}'", s)),
+    }
+}
+
+fn parse_xmm_register(s: &str) -> Result<XmmRegister, String> {
+    match s.to_uppercase().as_str() {
+        "XMM0" => Ok(XmmRegister::XMM0),
+        "XMM1" => Ok(XmmRegister::XMM1),
+        "XMM2" => Ok(XmmRegister::XMM2),
+        "XMM3" => Ok(XmmRegister::XMM3),
+        "XMM4" => Ok(XmmRegister::XMM4),
+        "XMM5" => Ok(XmmRegister::XMM5),
+        "XMM6" => Ok(XmmRegister::XMM6),
+        "XMM7" => Ok(XmmRegister::XMM7),
+        "XMM8" => Ok(XmmRegister::XMM8),
+        "XMM9" => Ok(XmmRegister::XMM9),
+        "XMM10" => Ok(XmmRegister::XMM10),
+        "XMM11" => Ok(XmmRegister::XMM11),
+        "XMM12" => Ok(XmmRegister::XMM12),
+        "XMM13" => Ok(XmmRegister::XMM13),
+        "XMM14" => Ok(XmmRegister::XMM14),
+        "XMM15" => Ok(XmmRegister::XMM15),
+        _ => Err(format!("unknown XMM register: '{}'", s)),
+    }
+}
+
 /// Parse an `Expr` into an `Operand`.
 ///
 /// Supported forms:
@@ -47,8 +81,17 @@ fn parse_register(s: &str) -> Result<Register, String> {
 fn parse_operand(expr: &Expr) -> Result<Operand, String> {
     match expr {
         Expr::Symbol(s) => {
-            let reg = parse_register(s)?;
-            Ok(Operand::Reg(reg))
+            // Try GPR first, then CR, then XMM.
+            if let Ok(reg) = parse_register(s) {
+                return Ok(Operand::Reg(reg));
+            }
+            if let Ok(cr) = parse_control_register(s) {
+                return Ok(Operand::Cr(cr));
+            }
+            if let Ok(xmm) = parse_xmm_register(s) {
+                return Ok(Operand::Xmm(xmm));
+            }
+            Err(format!("unknown register or symbol: '{}'", s))
         }
         Expr::Int(n) => {
             // Guard against silent truncation of large i64 values.
@@ -175,9 +218,17 @@ fn parse_text_operand(token: &str) -> Result<Operand, String> {
         return Ok(Operand::Mem(MemoryAddr::base_disp(base, disp)));
     }
 
-    // Try as a register first.
+    // Try GPR first.
     if let Ok(reg) = parse_register(token) {
         return Ok(Operand::Reg(reg));
+    }
+    // Try control register.
+    if let Ok(cr) = parse_control_register(token) {
+        return Ok(Operand::Cr(cr));
+    }
+    // Try XMM register.
+    if let Ok(xmm) = parse_xmm_register(token) {
+        return Ok(Operand::Xmm(xmm));
     }
 
     // Otherwise treat as an integer immediate.
@@ -419,6 +470,47 @@ fn parse_text_instruction(line: &str) -> Result<Option<Instruction>, String> {
             Instruction::JgLabel(ops[0].clone())
         }
 
+        // --- Control registers ---
+        "movcr" => {
+            need(2)?;
+            Instruction::MovCr(op(0)?, op(1)?)
+        }
+
+        // --- SSE2 ---
+        "movdqa" => {
+            need(2)?;
+            Instruction::Movdqa(op(0)?, op(1)?)
+        }
+        "movdqu" => {
+            need(2)?;
+            Instruction::Movdqu(op(0)?, op(1)?)
+        }
+        "paddb" => { need(2)?; Instruction::Paddb(op(0)?, op(1)?) }
+        "paddw" => { need(2)?; Instruction::Paddw(op(0)?, op(1)?) }
+        "paddd" => { need(2)?; Instruction::Paddd(op(0)?, op(1)?) }
+        "paddq" => { need(2)?; Instruction::Paddq(op(0)?, op(1)?) }
+        "psubb" => { need(2)?; Instruction::Psubb(op(0)?, op(1)?) }
+        "psubw" => { need(2)?; Instruction::Psubw(op(0)?, op(1)?) }
+        "psubd" => { need(2)?; Instruction::Psubd(op(0)?, op(1)?) }
+        "psubq" => { need(2)?; Instruction::Psubq(op(0)?, op(1)?) }
+        "pxor" => { need(2)?; Instruction::Pxor(op(0)?, op(1)?) }
+        "pand" => { need(2)?; Instruction::Pand(op(0)?, op(1)?) }
+        "por" => { need(2)?; Instruction::Por(op(0)?, op(1)?) }
+        "pcmpeqb" => { need(2)?; Instruction::Pcmpeqb(op(0)?, op(1)?) }
+        "pcmpeqw" => { need(2)?; Instruction::Pcmpeqw(op(0)?, op(1)?) }
+        "pcmpeqd" => { need(2)?; Instruction::Pcmpeqd(op(0)?, op(1)?) }
+
+        // --- Scalar SSE ---
+        "movsd" => { need(2)?; Instruction::Movsd(op(0)?, op(1)?) }
+        "addsd" => { need(2)?; Instruction::Addsd(op(0)?, op(1)?) }
+        "subsd" => { need(2)?; Instruction::Subsd(op(0)?, op(1)?) }
+        "mulsd" => { need(2)?; Instruction::Mulsd(op(0)?, op(1)?) }
+        "divsd" => { need(2)?; Instruction::Divsd(op(0)?, op(1)?) }
+        "cvtsi2sd" => { need(2)?; Instruction::Cvtsi2sd(op(0)?, op(1)?) }
+        "cvttsd2si" => { need(2)?; Instruction::Cvttsd2si(op(0)?, op(1)?) }
+        "ucomisd" => { need(2)?; Instruction::Ucomisd(op(0)?, op(1)?) }
+        "xorps" => { need(2)?; Instruction::Xorps(op(0)?, op(1)?) }
+
         // NASM section/global directives — silently ignored.
         "section" | "global" | "extern" | "bits" | "default" => return Ok(None),
 
@@ -623,6 +715,85 @@ pub fn register_assembler(env: Env, heap: &mut Heap) {
                             return Err("jg: expects 1 target label".into());
                         }
                         Instruction::JgLabel(parse_label_name(&parts[1], "jg")?)
+                    }
+
+                    // --- Control registers ---
+                    "movcr" => {
+                        if parts.len() != 3 {
+                            return Err("movcr: expects 2 operands".into());
+                        }
+                        let dst = parse_operand(&parts[1])?;
+                        let src = parse_operand(&parts[2])?;
+                        Instruction::MovCr(dst, src)
+                    }
+
+                    // --- Scalar SSE ---
+                    "movsd" => {
+                        if parts.len() != 3 {
+                            return Err("movsd: expects 2 operands".into());
+                        }
+                        Instruction::Movsd(parse_operand(&parts[1])?, parse_operand(&parts[2])?)
+                    }
+                    "addsd" | "subsd" | "mulsd" | "divsd"
+                    | "cvtsi2sd" | "cvttsd2si"
+                    | "ucomisd" | "xorps" => {
+                        if parts.len() != 3 {
+                            return Err(format!("{}: expects 2 operands", op));
+                        }
+                        let dst = parse_operand(&parts[1])?;
+                        let src = parse_operand(&parts[2])?;
+                        match op {
+                            "addsd" => Instruction::Addsd(dst, src),
+                            "subsd" => Instruction::Subsd(dst, src),
+                            "mulsd" => Instruction::Mulsd(dst, src),
+                            "divsd" => Instruction::Divsd(dst, src),
+                            "cvtsi2sd" => Instruction::Cvtsi2sd(dst, src),
+                            "cvttsd2si" => Instruction::Cvttsd2si(dst, src),
+                            "ucomisd" => Instruction::Ucomisd(dst, src),
+                            "xorps" => Instruction::Xorps(dst, src),
+                            _ => unreachable!(),
+                        }
+                    }
+
+                    // --- SSE2 ---
+                    "movdqa" => {
+                        if parts.len() != 3 {
+                            return Err("movdqa: expects 2 operands".into());
+                        }
+                        Instruction::Movdqa(parse_operand(&parts[1])?, parse_operand(&parts[2])?)
+                    }
+                    "movdqu" => {
+                        if parts.len() != 3 {
+                            return Err("movdqu: expects 2 operands".into());
+                        }
+                        Instruction::Movdqu(parse_operand(&parts[1])?, parse_operand(&parts[2])?)
+                    }
+                    "paddb" | "paddw" | "paddd" | "paddq"
+                    | "psubb" | "psubw" | "psubd" | "psubq"
+                    | "pxor" | "pand" | "por"
+                    | "pcmpeqb" | "pcmpeqw" | "pcmpeqd" => {
+                        if parts.len() != 3 {
+                            return Err(format!("{}: expects 2 operands", op));
+                        }
+                        let dst = parse_operand(&parts[1])?;
+                        let src = parse_operand(&parts[2])?;
+                        match op {
+                            "paddb" => Instruction::Paddb(dst, src),
+                            "paddw" => Instruction::Paddw(dst, src),
+                            "paddd" => Instruction::Paddd(dst, src),
+                            "paddq" => Instruction::Paddq(dst, src),
+                            "psubb" => Instruction::Psubb(dst, src),
+                            "psubw" => Instruction::Psubw(dst, src),
+                            "psubd" => Instruction::Psubd(dst, src),
+                            "psubq" => Instruction::Psubq(dst, src),
+                            "pxor" => Instruction::Pxor(dst, src),
+                            "pand" => Instruction::Pand(dst, src),
+                            "por" => Instruction::Por(dst, src),
+                            "pcmpeqb" => Instruction::Pcmpeqb(dst, src),
+                            "pcmpeqw" => Instruction::Pcmpeqw(dst, src),
+                            "pcmpeqd" => Instruction::Pcmpeqd(dst, src),
+                            _ => unreachable!(),
+                        }
                     }
 
                     _ => return Err(format!("asm: unsupported instruction '{}'", op)),

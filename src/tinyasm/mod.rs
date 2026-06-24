@@ -8,4 +8,4 @@ pub use assembler::Assembler;
 pub use encoder::{EncodeError, Instruction, MemoryAddr, Operand};
 #[cfg(target_arch = "x86_64")]
 pub use jit::JitMemory;
-pub use registers::Register;
+pub use registers::{ControlRegister, Register, XmmRegister};

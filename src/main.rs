@@ -39,7 +39,18 @@ fn run(src: &str, global_env: GcHandle, heap: &mut Heap) {
 }
 
 fn repl(global_env: GcHandle, heap: &mut Heap) {
-    println!("pilisp REPL — Ctrl+D to exit");
+    const R: &str = "\x1b[0m";
+    const BOLD: &str = "\x1b[1m";
+    const DIM: &str = "\x1b[2m";
+    const MAGENTA: &str = "\x1b[35m";
+    const CYAN: &str = "\x1b[36m";
+
+    println!("    /\\___/\\");
+    println!("   (  UwU  )");
+    println!("    \\ ({BOLD}{MAGENTA}π{R}) /");
+    println!("    (_____)");
+    println!("   {BOLD}{CYAN}pi-lisp REPL{R}");
+    println!("   {DIM}Ctrl+D to exit{R}");
     let mut input = String::new();
 
     loop {

@@ -3,7 +3,7 @@
 }:
 
 pkgs.rustPlatform.buildRustPackage rec {
-  pname = "pilisp";
+  pname = "pi-lisp";
   version = "1.7.4";
 
   # The source directory of the project

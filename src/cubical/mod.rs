@@ -213,7 +213,7 @@ fn process_data(dt: &crate::cubical::syntax::Datatype, env: &mut Env) -> Result<
 }
 
 fn process_def(name: &Name, ty: &Term, val: &Term, env: &mut Env) -> Result<RunOutput, RunError> {
-    println!("Checking definition: {}", name);
+    println!("{}: ✓", name);
     let closed_ty_globals = apply_globals(&env.defs, ty);
     let closed_val = val.clone();
 

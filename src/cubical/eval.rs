@@ -5,7 +5,7 @@
 //   crate::syntax::{Term, Name, shift, subst, beta}
 
 use crate::cubical::interval::{I, dnf_bot, dnf_top, eval_interval};
-use crate::cubical::syntax::{Term, beta, shift, subst};
+use crate::cubical::syntax::{Term, beta, max_var, shift, subst};
 
 // ---------------------------------------------------------------------------
 // DNF Helpers
@@ -338,47 +338,79 @@ pub fn eval_transport(p_: Term, x_: Term) -> Term {
 
             match (&b0, &b1) {
                 // ------------------------------------------------------
-                // Pi transport (non-dependent codomain only)
+                // Pi transport
                 // ------------------------------------------------------
-                (Term::TPi(arg_name, _, _), Term::TPi(_, _, _)) => {
+                (Term::TPi(arg_name, a0, _), Term::TPi(_, a1, _)) => {
                     let arg_name = arg_name.clone();
                     let i_name = i_name.clone();
 
-                    // B-family: ⟨i⟩ B i
-                    let b0_body = match &b0 {
-                        Term::TPi(_, _, b) => (**b).clone(),
-                        _ => b0.clone(),
-                    };
-                    let b_fam = Term::PLam(
-                        i_name.clone(),
-                        Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
-                            Term::TPi(_, _, b_i) => *b_i,
-                            _ => shift(1, 0, &b0_body),
-                        }),
-                    );
-
-                    // Is B non-dependent in a (TVar 0)?
-                    let b_non_dep = match &b0 {
-                        Term::TPi(_, _, b0_body) => subst(0, &Term::TUniv(0), b0_body) == **b0_body,
-                        _ => false,
-                    };
-
-                    if b_non_dep {
-                        // λ a. transport (⟨i⟩ B i) (f a)
+                    // Check if domain is constant (A₀ = A₁)
+                    let a0_eval = eval(a0);
+                    let a1_eval = eval(a1);
+                    if syntactic_eq(&a0_eval, &a1_eval) {
+                        // Domain constant: handle ALL codomain patterns
+                        // Result: λ a. transport (⟨i⟩ B_i[a/x]) (f a)
+                        let b_fam = Term::PLam(
+                            i_name.clone(),
+                            Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
+                                Term::TPi(_, _, b_i) => {
+                                    // b_i has x at TVar(0) and interval at TVar(1).
+                                    // Swap so the new PLam body has:
+                                    //   TVar(0) = interval (new PLam binder)
+                                    //   TVar(1) = a (TAbs binder, shifted by PLam)
+                                    let max_idx = max_var(&b_i);
+                                    let temp = max_idx + 1;
+                                    let tmp_var = Term::TVar(temp);
+                                    let step1 = subst(0, &tmp_var, &b_i);
+                                    let step2 = subst(1, &Term::TVar(0), &step1);
+                                    subst(temp, &Term::TVar(1), &step2)
+                                }
+                                _ => {
+                                    let b0_body = match &b0 {
+                                        Term::TPi(_, _, b) => (**b).clone(),
+                                        _ => b0.clone(),
+                                    };
+                                    shift(1, 0, &b0_body)
+                                }
+                            }),
+                        );
                         let x_shifted = shift(1, 0, &x_);
                         Term::TAbs(
                             arg_name,
                             Box::new(eval(&Term::TTransport(
                                 Box::new(b_fam),
-                                Box::new(eval(&Term::TApp(
-                                    Box::new(x_shifted),
-                                    Box::new(Term::TVar(0)),
-                                ))),
+                                Box::new(eval(&Term::TApp(Box::new(x_shifted), Box::new(Term::TVar(0))))),
                             ))),
                         )
                     } else {
-                        // Dependent B: stuck
-                        Term::TTransport(Box::new(Term::PLam(i_name, body.clone())), Box::new(x_))
+                        // Domain varies: old non-dependent-only check
+                        let b0_body = match &b0 {
+                            Term::TPi(_, _, b) => (**b).clone(),
+                            _ => b0.clone(),
+                        };
+                        let b_fam = Term::PLam(
+                            i_name.clone(),
+                            Box::new(match eval(&beta(&shift(1, 0, body), &Term::TVar(0))) {
+                                Term::TPi(_, _, b_i) => *b_i,
+                                _ => shift(1, 0, &b0_body),
+                            }),
+                        );
+                        let b_non_dep = match &b0 {
+                            Term::TPi(_, _, b0_body) => subst(0, &Term::TUniv(0), b0_body) == **b0_body,
+                            _ => false,
+                        };
+                        if b_non_dep {
+                            let x_shifted = shift(1, 0, &x_);
+                            Term::TAbs(
+                                arg_name,
+                                Box::new(eval(&Term::TTransport(
+                                    Box::new(b_fam),
+                                    Box::new(eval(&Term::TApp(Box::new(x_shifted), Box::new(Term::TVar(0))))),
+                                ))),
+                            )
+                        } else {
+                            Term::TTransport(Box::new(Term::PLam(i_name.clone(), body.clone())), Box::new(x_))
+                        }
                     }
                 }
 

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::cubical::interval::{DNF, I, dnf_bot, dnf_top, eval_interval};
-use crate::cubical::syntax::{ElimCase, Level, Name, Term};
+use crate::cubical::syntax::{ElimCase, Level, Name, Term, max_var};
 
 pub type Env = Vec<Value>;
 
@@ -389,30 +389,76 @@ fn apply_non_dep(clos: &Closure) -> Value {
     clos.apply(Value::VInterval(I::I0))
 }
 
-/// Transport through Pi types (non-dependent codomain).
+/// Check whether a term references the first de Bruijn variable (index 0).
+fn uses_tvar_0(t: &Term) -> bool {
+    match t {
+        Term::TVar(i) => *i == 0,
+        Term::TApp(f, a) => uses_tvar_0(f) || uses_tvar_0(a),
+        Term::TAbs(_, b) => uses_tvar_0(b),
+        Term::TPi(_, a, b) => uses_tvar_0(a) || uses_tvar_0(b),
+        Term::TPath(a, u, v) => uses_tvar_0(a) || uses_tvar_0(u) || uses_tvar_0(v),
+        Term::PLam(_, b) => uses_tvar_0(b),
+        Term::PApp(p, r) => uses_tvar_0(p) || uses_tvar_0(r),
+        Term::THComp(a, phi, u, u0) => uses_tvar_0(a) || uses_tvar_0(phi) || uses_tvar_0(u) || uses_tvar_0(u0),
+        Term::TEquiv(a, b) => uses_tvar_0(a) || uses_tvar_0(b),
+        Term::TMkEquiv(a, b, f, g, eta, eps) => {
+            uses_tvar_0(a) || uses_tvar_0(b) || uses_tvar_0(f) || uses_tvar_0(g) || uses_tvar_0(eta) || uses_tvar_0(eps)
+        }
+        Term::TEquivFwd(e, x) => uses_tvar_0(e) || uses_tvar_0(x),
+        Term::TUa(e) => uses_tvar_0(e),
+        Term::TTransport(p, x) => uses_tvar_0(p) || uses_tvar_0(x),
+        Term::TGlue(a, phi, te) => uses_tvar_0(a) || uses_tvar_0(phi) || uses_tvar_0(te),
+        Term::TGlueElem(phi, t, a) => uses_tvar_0(phi) || uses_tvar_0(t) || uses_tvar_0(a),
+        Term::TUnglue(phi, te, g) => uses_tvar_0(phi) || uses_tvar_0(te) || uses_tvar_0(g),
+        Term::TSigma(_, a, b) => uses_tvar_0(a) || uses_tvar_0(b),
+        Term::TPair(a, b) => uses_tvar_0(a) || uses_tvar_0(b),
+        Term::TFst(p) => uses_tvar_0(p),
+        Term::TSnd(p) => uses_tvar_0(p),
+        Term::TUniv(_) | Term::TIntervalTy | Term::TInterval(_) | Term::TCube(_) | Term::TData(_) => false,
+        Term::TCon(_, _, args) => args.iter().any(|a| uses_tvar_0(a)),
+        Term::TPCon(_, _, args, r) => args.iter().any(|a| uses_tvar_0(a)) || uses_tvar_0(r),
+        Term::TElim(motive, cases, scrut) => {
+            uses_tvar_0(motive) || uses_tvar_0(scrut) || cases.iter().any(|c| uses_tvar_0(&c.body))
+        }
+    }
+}
+
+/// Transport through Pi types.
 fn transport_pi(env: &[Value], i_name: &str, clos: &IClosure, arg_name: &str, x: Value) -> Value {
     let (formal_env, pi_at_var) = eval_body_at_formal_interval(env, clos);
-    let b_val = match &pi_at_var {
-        Value::VPi(_, _, cod_clos) => apply_non_dep(cod_clos),
+    let cod_clos = match &pi_at_var {
+        Value::VPi(_, _, cod_clos) => cod_clos,
         _ => return Value::VTransport(
             Box::new(Value::VPLam("_".to_string(), clos.clone())),
             Box::new(x),
         ),
     };
-    let b_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), b_val));
-    let b_fam = Term::PLam(i_name.to_string(), Box::new(b_body));
-    let x_term = quote(env.len(), x);
-    let result = Term::TAbs(
-        arg_name.to_string(),
-        Box::new(Term::TTransport(
-            Box::new(b_fam),
-            Box::new(Term::TApp(
-                Box::new(crate::cubical::syntax::shift(1, 0, &x_term)),
-                Box::new(Term::TVar(0)),
+
+    // Non-dependent codomain: apply_non_dep is safe.
+    if !uses_tvar_0(&cod_clos.body) {
+        let b_val = apply_non_dep(cod_clos);
+        let b_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), b_val));
+        let b_fam = Term::PLam(i_name.to_string(), Box::new(b_body));
+        let x_term = quote(env.len(), x);
+        let result = Term::TAbs(
+            arg_name.to_string(),
+            Box::new(Term::TTransport(
+                Box::new(b_fam),
+                Box::new(Term::TApp(
+                    Box::new(crate::cubical::syntax::shift(1, 0, &x_term)),
+                    Box::new(Term::TVar(0)),
+                )),
             )),
-        )),
-    );
-    eval_nbe(env, &result)
+        );
+        eval_nbe(env, &result)
+    } else {
+        // Codomain depends on x: fall through to deep_transport
+        // (which uses the enhanced eval_transport for constant-domain Pi)
+        Value::VTransport(
+            Box::new(Value::VPLam("_".to_string(), clos.clone())),
+            Box::new(x),
+        )
+    }
 }
 
 /// Transport through Path types.
@@ -698,51 +744,6 @@ pub fn normalize(env: &[Value], t: &Term) -> Term {
     quote(env.len(), eval_nbe(env, t))
 }
 
-fn max_var(t: &Term) -> i32 {
-    match t {
-        Term::TVar(i) => *i,
-        Term::TApp(f, a) => max_var(f).max(max_var(a)),
-        Term::TAbs(_, b) => (max_var(b) - 1).max(-1),
-        Term::TUniv(_) => -1,
-        Term::TIntervalTy => -1,
-        Term::TPi(_, a, b) => max_var(a).max(max_var(b) - 1).max(-1),
-        Term::TInterval(_) => -1,
-        Term::TCube(_) => -1,
-        Term::TPath(a, u, v) => max_var(a).max(max_var(u)).max(max_var(v)),
-        Term::PLam(_, b) => (max_var(b) - 1).max(-1),
-        Term::PApp(p, r) => max_var(p).max(max_var(r)),
-        Term::THComp(a, phi, u, u0) => max_var(a).max(max_var(phi)).max(max_var(u)).max(max_var(u0)),
-        Term::TEquiv(a, b) => max_var(a).max(max_var(b)),
-        Term::TMkEquiv(a, b, f, g, eta, eps) => max_var(a)
-            .max(max_var(b))
-            .max(max_var(f))
-            .max(max_var(g))
-            .max(max_var(eta))
-            .max(max_var(eps)),
-        Term::TEquivFwd(e, x) => max_var(e).max(max_var(x)),
-        Term::TUa(e) => max_var(e),
-        Term::TTransport(p, x) => max_var(p).max(max_var(x)),
-        Term::TGlue(a, phi, te) => max_var(a).max(max_var(phi)).max(max_var(te)),
-        Term::TGlueElem(phi, t, a) => max_var(phi).max(max_var(t)).max(max_var(a)),
-        Term::TUnglue(phi, te, g) => max_var(phi).max(max_var(te)).max(max_var(g)),
-        Term::TSigma(_, a, b) => max_var(a).max(max_var(b) - 1).max(-1),
-        Term::TPair(a, b) => max_var(a).max(max_var(b)),
-        Term::TFst(p) => max_var(p),
-        Term::TSnd(p) => max_var(p),
-        Term::TData(_) => -1,
-        Term::TCon(_, _, args) => args.iter().map(max_var).fold(-1, |m, x| m.max(x)),
-        Term::TPCon(_, _, args, r) => args.iter().map(max_var).fold(-1, |m, x| m.max(x)).max(max_var(r)),
-        Term::TElim(motive, cases, scrut) => {
-            let mut m = max_var(motive).max(max_var(scrut));
-            for case in cases {
-                let n = case.binders.len() as i32;
-                m = m.max(max_var(&case.body) - n);
-            }
-            m.max(-1)
-        }
-    }
-}
-
 pub fn nbe_eval(t: &Term) -> Term {
     let mv = max_var(t);
     if mv < 0 {
@@ -965,5 +966,91 @@ mod tests {
             }
         }
         assert!(no_inner_transport(&result), "inner transport should reduce");
+    }
+
+    #[test]
+    fn dependent_pi_transport_reduces_through_deep_transport() {
+        // transport (⟨i⟩ Π (x : U0) → (x → U0)) (λ x y. x)
+        // Domain (U0) is constant. Codomain (x → U0) depends on x.
+        // Native NBE transport_pi should fall through to deep_transport
+        // which uses the enhanced eval_transport.
+        let body = Term::TPi(
+            "x".to_string(),
+            b(Term::TUniv(0)),
+            b(Term::TPi(
+                "y".to_string(),
+                b(Term::TVar(0)),   // x → ... (domain depends on x)
+                b(Term::TUniv(0)),
+            )),
+        );
+        let fam = Term::PLam("i".to_string(), b(body));
+        let arg = Term::TAbs(
+            "x".to_string(),
+            b(Term::TAbs("y".to_string(), b(Term::TVar(1)))),
+        );  // λ x. λ y. x
+        let term = Term::TTransport(b(fam), b(arg));
+        let result = nbe_eval(&term);
+
+        // Should produce a TAbs (lambda) — no stuck transport
+        assert!(
+            matches!(&result, Term::TAbs(_, _)),
+            "expected TAbs, got: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
+        // No TTransport should remain in the result
+        fn no_transport(t: &Term) -> bool {
+            match t {
+                Term::TTransport(_, _) => false,
+                Term::TAbs(_, b) => no_transport(b),
+                Term::PLam(_, b) => no_transport(b),
+                _ => true,
+            }
+        }
+        assert!(
+            no_transport(&result),
+            "result should not contain TTransport: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
+    }
+
+    #[test]
+    fn dependent_pi_transport_with_constant_domain_different_codomain() {
+        // transport (⟨i⟩ Π (x : U0) → (U0 → x)) (λ x y. x)
+        // Codomain (U0 → x) depends on x (the return type references x).
+        let body = Term::TPi(
+            "x".to_string(),
+            b(Term::TUniv(0)),
+            b(Term::TPi(
+                "y".to_string(),
+                b(Term::TUniv(0)),
+                b(Term::TVar(0)),   // → x  (return type references x)
+            )),
+        );
+        let fam = Term::PLam("i".to_string(), b(body));
+        let arg = Term::TAbs(
+            "x".to_string(),
+            b(Term::TAbs("y".to_string(), b(Term::TVar(1)))),
+        );  // λ x. λ y. x
+        let term = Term::TTransport(b(fam), b(arg));
+        let result = nbe_eval(&term);
+
+        assert!(
+            matches!(&result, Term::TAbs(_, _)),
+            "expected TAbs, got: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
+        fn no_transport(t: &Term) -> bool {
+            match t {
+                Term::TTransport(_, _) => false,
+                Term::TAbs(_, b) => no_transport(b),
+                Term::PLam(_, b) => no_transport(b),
+                _ => true,
+            }
+        }
+        assert!(
+            no_transport(&result),
+            "result should not contain TTransport: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
     }
 }

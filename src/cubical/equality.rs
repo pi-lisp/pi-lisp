@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::cubical::eval::{is_bot_dnf, is_top_dnf};
+use crate::cubical::syntax::{is_bot_dnf, is_top_dnf};
 use crate::cubical::interval::I;
 use crate::cubical::nbe::nbe_eval;
 use crate::cubical::syntax::{Name, Term, beta, shift};

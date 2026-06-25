@@ -3,7 +3,7 @@
 // Depends on types from interval.rs:
 //   use crate::interval::{I, DNF};
 
-use crate::cubical::interval::{DNF, I};
+use crate::cubical::interval::{DNF, I, dnf_bot, dnf_top};
 use std::fmt;
 
 pub type Name = String;
@@ -538,6 +538,31 @@ pub fn max_var(t: &Term) -> i32 {
             }
             m.max(-1)
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DNF helpers for terms
+// ---------------------------------------------------------------------------
+
+pub fn is_top_dnf(t: &Term) -> bool {
+    matches!(t, Term::TCube(d) if *d == dnf_top())
+}
+
+pub fn is_bot_dnf(t: &Term) -> bool {
+    matches!(t, Term::TCube(d) if *d == dnf_bot())
+}
+
+// ---------------------------------------------------------------------------
+// Extract the domain type from an equivalence term.
+// ---------------------------------------------------------------------------
+
+pub fn equiv_dom(t: &Term) -> Term {
+    match t {
+        Term::TMkEquiv(a, _, _, _, _, _) => (**a).clone(),
+        Term::TEquiv(a, _) => (**a).clone(),
+        Term::TPair(a, _) => (**a).clone(),
+        other => other.clone(),
     }
 }
 

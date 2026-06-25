@@ -10,9 +10,6 @@ use crate::gc::Heap;
 use crate::macros::{eval_quasiquote, expand_macro};
 use crate::reader::{parse_all, parse_params};
 
-// How many live heap slots we allow before triggering a collection inside
-// `apply`.  Tune this to trade GC frequency against peak memory use.
-const GC_THRESHOLD: usize = 1024;
 
 thread_local! {
     static IMPORT_BASES: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
@@ -791,9 +788,7 @@ fn apply_step(
             // Note: `call_frame`'s parent chain already includes `closure_env`,
             // so the mark phase would reach it anyway — listing both is just
             // defensive and costs nothing.
-            if heap.live_count() > GC_THRESHOLD {
-                heap.collect(&[call_site_env, closure_env, call_frame]);
-            }
+            heap.maybe_collect(&[call_site_env, closure_env, call_frame]);
 
             // ── 3. Return a TailCall instead of recursing ─────────────────
             //

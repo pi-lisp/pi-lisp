@@ -661,6 +661,14 @@ impl<'h> VM<'h> {
                     });
                 }
 
+                // ── Maybe collect ───────────────────────────────────────────
+                //
+                // Trigger GC if the heap has grown past the threshold.
+                // All frame environments are passed as roots so that
+                // nothing reachable from the call stack is collected.
+                let frame_roots: Vec<GcHandle> = self.frames.iter().map(|f| f.env).collect();
+                self.heap.maybe_collect(&frame_roots);
+
                 Ok(())
             }
 

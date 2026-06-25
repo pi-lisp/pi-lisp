@@ -322,7 +322,7 @@ fn subst_case_args(binders: &[crate::cubical::syntax::Name], args: &[Term], body
 // Transport (extracted for readability)
 // ---------------------------------------------------------------------------
 
-fn eval_transport(p_: Term, x_: Term) -> Term {
+pub fn eval_transport(p_: Term, x_: Term) -> Term {
     match p_ {
         // ua e : Path U A B  →  transport (ua e) x  =  equivFwd e x
         Term::TUa(ref e) => eval(&Term::TEquivFwd(e.clone(), Box::new(x_))),

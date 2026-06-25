@@ -151,7 +151,17 @@ pub fn eval_nbe(env: &[Value], t: &Term) -> Value {
         ),
         Term::TEquivFwd(e, x) => do_equiv_fwd(eval_nbe(env, e), eval_nbe(env, x)),
         Term::TUa(e) => Value::VUa(Box::new(eval_nbe(env, e))),
-        Term::TTransport(p, x) => do_transport(eval_nbe(env, p), eval_nbe(env, x)),
+        Term::TTransport(p, x) => {
+            let p_val = eval_nbe(env, p);
+            let x_val = eval_nbe(env, x);
+            let res = do_transport(env, p_val.clone(), x_val.clone());
+            match &res {
+                Value::VTransport(_, _) | Value::VNeutral(Neutral::NTransport(_, _)) => {
+                    deep_transport(env, p_val, x_val).unwrap_or(res)
+                }
+                _ => res,
+            }
+        }
         Term::TGlue(a, phi, te) => {
             let phi = value_to_dnf(eval_nbe(env, phi));
             let te = eval_nbe(env, te);
@@ -182,13 +192,17 @@ pub fn eval_nbe(env: &[Value], t: &Term) -> Value {
         Term::TUnglue(phi, te, g) => {
             let phi = value_to_dnf(eval_nbe(env, phi));
             let te = eval_nbe(env, te);
-            let g = eval_nbe(env, g);
+            let g_val = eval_nbe(env, g);
             if phi == dnf_top() {
-                do_equiv_fwd(te, g)
+                do_equiv_fwd(te, g_val)
             } else if phi == dnf_bot() {
-                g
+                g_val
             } else {
-                Value::VUnglue(phi, Box::new(te), Box::new(g))
+                // β-reduction: unglue φ (glueElem φ t a) → a
+                match &g_val {
+                    Value::VGlueElem(g_phi, _, a) if *g_phi == phi => *a.clone(),
+                    _ => Value::VUnglue(phi, Box::new(te), Box::new(g_val)),
+                }
             }
         }
         Term::TSigma(x, a, b) => Value::VSigma(
@@ -297,21 +311,228 @@ pub fn do_elim(motive: Value, cases: &[ElimCase], scrut: Value, env: &[Value]) -
     }
 }
 
-pub fn do_transport(p: Value, x: Value) -> Value {
+pub fn do_transport(env: &[Value], p: Value, x: Value) -> Value {
     match p {
         Value::VUa(e) => do_equiv_fwd(*e, x),
-        Value::VPLam(_, clos) => {
+        Value::VPLam(ref i_name, ref clos) => {
             let b0 = clos.apply_i(I::I0);
             let b1 = clos.apply_i(I::I1);
             if quote(0, b0.clone()) == quote(0, b1.clone()) {
                 return x;
             }
-            match (&b0, &b1) {
+
+            let result = match (&b0, &b1) {
                 (Value::VUniv(_), Value::VUniv(_)) => x,
-                _ => Value::VTransport(Box::new(Value::VPLam("_".to_string(), clos)), Box::new(x)),
-            }
+
+                // ----------------------------------------------------------
+                // Pi transport (non-dependent codomain only)
+                // ----------------------------------------------------------
+                (Value::VPi(arg_name, _, _), Value::VPi(_, _, _)) => {
+                    transport_pi(env, i_name, clos, arg_name, x)
+                }
+
+                // ----------------------------------------------------------
+                // Path transport
+                // ----------------------------------------------------------
+                (Value::VPath(_, _, _), Value::VPath(_, _, _)) => {
+                    transport_path(env, i_name, clos, x)
+                }
+
+                // ----------------------------------------------------------
+                // Sigma transport (pair only)
+                // ----------------------------------------------------------
+                (Value::VSigma(_, _, _), Value::VSigma(_, _, _)) => {
+                    match x {
+                        Value::VPair(ref a, ref b) => {
+                            transport_sigma_pair(env, i_name, clos, a, b)
+                        }
+                        _ => Value::VTransport(Box::new(Value::VPLam("_".to_string(), clos.clone())), Box::new(x)),
+                    }
+                }
+
+                // ----------------------------------------------------------
+                // Glue transport (phi=bot or phi=top)
+                // ----------------------------------------------------------
+                (Value::VGlue(_, phi0, _), Value::VGlue(_, _, _)) => {
+                    let r = transport_glue(env, i_name, clos, phi0, &x);
+                    r.unwrap_or_else(|| {
+                        Value::VTransport(Box::new(Value::VPLam("_".to_string(), clos.clone())), Box::new(x))
+                    })
+                }
+
+                _ => Value::VTransport(Box::new(Value::VPLam("_".to_string(), clos.clone())), Box::new(x)),
+            };
+
+            return result;
         }
         other => Value::VNeutral(Neutral::NTransport(Box::new(other), Box::new(x))),
+    }
+}
+
+/// Evaluate the body of a PLam at a formal interval variable (TVar(0) in the
+/// returned term will be the interval binder).  The body is
+/// `beta(shift(1,0,clos.body), TVar(0))` — the original PLam body with the
+/// interval binder replaced by a bound variable.
+fn eval_body_at_formal_interval(env: &[Value], clos: &IClosure) -> (Vec<Value>, Value) {
+    let body_with_var = crate::cubical::syntax::beta(
+        &crate::cubical::syntax::shift(1, 0, &clos.body),
+        &Term::TVar(0),
+    );
+    let mut formal_env = vec![Value::VIntervalVar(env.len())];
+    formal_env.extend_from_slice(env);
+    let evaluated = eval_nbe(&formal_env, &body_with_var);
+    (formal_env, evaluated)
+}
+
+/// Apply a Closure with a dummy argument (for non-dependent extraction).
+fn apply_non_dep(clos: &Closure) -> Value {
+    clos.apply(Value::VInterval(I::I0))
+}
+
+/// Transport through Pi types (non-dependent codomain).
+fn transport_pi(env: &[Value], i_name: &str, clos: &IClosure, arg_name: &str, x: Value) -> Value {
+    let (formal_env, pi_at_var) = eval_body_at_formal_interval(env, clos);
+    let b_val = match &pi_at_var {
+        Value::VPi(_, _, cod_clos) => apply_non_dep(cod_clos),
+        _ => return Value::VTransport(
+            Box::new(Value::VPLam("_".to_string(), clos.clone())),
+            Box::new(x),
+        ),
+    };
+    let b_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), b_val));
+    let b_fam = Term::PLam(i_name.to_string(), Box::new(b_body));
+    let x_term = quote(env.len(), x);
+    let result = Term::TAbs(
+        arg_name.to_string(),
+        Box::new(Term::TTransport(
+            Box::new(b_fam),
+            Box::new(Term::TApp(
+                Box::new(crate::cubical::syntax::shift(1, 0, &x_term)),
+                Box::new(Term::TVar(0)),
+            )),
+        )),
+    );
+    eval_nbe(env, &result)
+}
+
+/// Transport through Path types.
+fn transport_path(env: &[Value], i_name: &str, clos: &IClosure, x: Value) -> Value {
+    let (formal_env, path_at_var) = eval_body_at_formal_interval(env, clos);
+    let a_val = match &path_at_var {
+        Value::VPath(a, _, _) => *a.clone(),
+        _ => return Value::VTransport(
+            Box::new(Value::VPLam("_".to_string(), clos.clone())),
+            Box::new(x),
+        ),
+    };
+    let a_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), a_val));
+    let a_fam = Term::PLam(i_name.to_string(), Box::new(a_body));
+    let x_term = quote(env.len(), x);
+    let a_fam_s = crate::cubical::syntax::shift(1, 0, &a_fam);
+    let result = Term::PLam(
+        "j".to_string(),
+        Box::new(Term::TTransport(
+            Box::new(a_fam_s),
+            Box::new(Term::PApp(
+                Box::new(crate::cubical::syntax::shift(1, 0, &x_term)),
+                Box::new(Term::TVar(0)),
+            )),
+        )),
+    );
+    eval_nbe(env, &result)
+}
+
+/// Transport through Sigma types (pair decomposition).
+fn transport_sigma_pair(
+    env: &[Value],
+    i_name: &str,
+    clos: &IClosure,
+    a: &Value,
+    b: &Value,
+) -> Value {
+    // A-family = domain of Sigma at each interval
+    let (formal_env, sigma_at_var) = eval_body_at_formal_interval(env, clos);
+    let a_val = match &sigma_at_var {
+        Value::VSigma(_, a_val, _) => *a_val.clone(),
+        _ => Value::VUniv(0),
+    };
+    let a_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), a_val));
+    let a_fam = Term::PLam(i_name.to_string(), Box::new(a_body));
+
+    // transport a along A
+    let a_prime = eval_nbe(env, &Term::TTransport(
+        Box::new(a_fam.clone()),
+        Box::new(quote(env.len(), a.clone())),
+    ));
+
+    // B-family = codomain of Sigma at each interval
+    let b_val = match &sigma_at_var {
+        Value::VSigma(_, _, cod_clos) => apply_non_dep(cod_clos),
+        _ => Value::VUniv(0),
+    };
+    let b_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), b_val));
+    let b_fam = Term::PLam(i_name.to_string(), Box::new(b_body));
+
+    // transport b along B
+    let b_prime = eval_nbe(env, &Term::TTransport(
+        Box::new(b_fam),
+        Box::new(quote(env.len(), b.clone())),
+    ));
+
+    Value::VPair(Box::new(a_prime), Box::new(b_prime))
+}
+
+/// Transport through Glue types (phi=bot or phi=top).
+fn transport_glue(
+    env: &[Value],
+    i_name: &str,
+    clos: &IClosure,
+    phi0: &DNF,
+    x: &Value,
+) -> Option<Value> {
+    if *phi0 == dnf_bot() {
+        // φ = 0: Glue = underlying type A — transport through A
+        let (formal_env, glue_at_var) = eval_body_at_formal_interval(env, clos);
+        let a_val = match &glue_at_var {
+            Value::VGlue(a, _, _) => *a.clone(),
+            _ => return None,
+        };
+        let a_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), a_val));
+        let a_fam = Term::PLam(i_name.to_string(), Box::new(a_body));
+        Some(eval_nbe(env, &Term::TTransport(
+            Box::new(a_fam),
+            Box::new(quote(env.len(), x.clone())),
+        )))
+    } else if *phi0 == dnf_top() {
+        // φ = 1: Glue = equiv domain — transport through domain
+        let (formal_env, glue_at_var) = eval_body_at_formal_interval(env, clos);
+        let te_val = match &glue_at_var {
+            Value::VGlue(_, _, te) => *te.clone(),
+            _ => return None,
+        };
+        let dom = equiv_dom_value(te_val);
+        let dom_body = crate::cubical::syntax::shift(1, 1, &quote(formal_env.len(), dom));
+        let dom_fam = Term::PLam(i_name.to_string(), Box::new(dom_body));
+        Some(eval_nbe(env, &Term::TTransport(
+            Box::new(dom_fam),
+            Box::new(quote(env.len(), x.clone())),
+        )))
+    } else {
+        None
+    }
+}
+
+/// Try deep transport reduction by quoting back to terms and using the
+/// structural [`crate::cubical::eval::eval_transport`].  Returns `None`
+/// when the structural evaluator also can't reduce the transport (i.e. it
+/// stayed a `TTransport`), and `Some(result)` on success.
+pub fn deep_transport(env: &[Value], p_val: Value, x_val: Value) -> Option<Value> {
+    let p_term = quote(env.len(), p_val);
+    let x_term = quote(env.len(), x_val);
+    let reduced = crate::cubical::eval::eval_transport(p_term, x_term);
+    match &reduced {
+        Term::TTransport(_, _) => None,
+        _ => Some(eval_nbe(env, &reduced)),
     }
 }
 
@@ -632,5 +853,117 @@ mod tests {
         let family = Term::PLam("i".to_string(), b(Term::TUniv(0)));
         let term = Term::TTransport(b(family), b(Term::TUniv(1)));
         assert_eq!(nbe_eval(&term), Term::TUniv(1));
+    }
+
+    #[test]
+    fn transport_over_nonconstant_pi_produces_lambda() {
+        // transport (λ i. Π (x : F@i) → U0) (λ x. U0)
+        // where F@i is the interval-dependent domain and the codomain
+        // U0 is constant → non-dependent Pi transport applies, producing
+        // λ a. transport (λ i. U0) (U0) → λ a. U0
+        let body = Term::TPi(
+            "x".to_string(),
+            b(Term::TApp(b(Term::TVar(1)), b(Term::TVar(0)))),
+            b(Term::TUniv(0)),
+        );
+        let fam = Term::PLam("i".to_string(), b(body));
+        let arg = Term::TAbs("x".to_string(), b(Term::TUniv(0)));
+        let term = Term::TTransport(b(fam), b(arg));
+        let result = nbe_eval(&term);
+        assert!(
+            matches!(&result, Term::TAbs(_, _)),
+            "expected TAbs, got: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
+    }
+
+    #[test]
+    fn deep_transport_fallback_unsticks_pi() {
+        // Same transport as above, but directly test that the fallback
+        // fires (do_transport returns VTransport, deep_transport succeeds).
+        let body = Term::TPi(
+            "x".to_string(),
+            b(Term::TApp(b(Term::TVar(1)), b(Term::TVar(0)))),
+            b(Term::TUniv(0)),
+        );
+        let fam = Term::PLam("i".to_string(), b(body));
+        let arg = Term::TAbs("x".to_string(), b(Term::TUniv(0)));
+        let term = Term::TTransport(b(fam), b(arg));
+
+        // nbe_eval uses the full pipeline
+        let result = nbe_eval(&term);
+        assert!(
+            !matches!(result, Term::TTransport(_, _)),
+            "transport should not be stuck: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
+    }
+
+    #[test]
+    fn sigma_transport_on_pair_reduces() {
+        // transport (λ i. Σ (x : U0) U0) (U0, U1) — constant, so identity
+        let sigma = Term::TSigma(
+            "x".to_string(),
+            b(Term::TUniv(0)),
+            b(Term::TUniv(1)),
+        );
+        let fam = Term::PLam("i".to_string(), b(sigma));
+        let pair = Term::TPair(b(Term::TUniv(0)), b(Term::TUniv(1)));
+        let term = Term::TTransport(b(fam), b(pair.clone()));
+        let result = nbe_eval(&term);
+        assert_eq!(result, pair);
+    }
+
+    #[test]
+    fn path_transport_produces_plam() {
+        // transport (⟨i⟩ Path U0 U0 U0) (⟨j⟩ U0)
+        // → ⟨j⟩ transport (⟨i⟩ U0) (U0) → ⟨j⟩ U0
+        let path = Term::TPath(
+            b(Term::TApp(b(Term::TVar(1)), b(Term::TVar(0)))),
+            b(Term::TUniv(0)),
+            b(Term::TUniv(0)),
+        );
+        let fam = Term::PLam("i".to_string(), b(path));
+        let arg = Term::PLam("j".to_string(), b(Term::TUniv(0)));
+        let term = Term::TTransport(b(fam), b(arg));
+        let result = nbe_eval(&term);
+        assert!(
+            matches!(&result, Term::PLam(_, _)),
+            "expected PLam, got: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
+    }
+
+    #[test]
+    fn native_pi_transport_no_deep_fallback() {
+        // Verify that the native Pi transport fires (the result is a TAbs)
+        // rather than falling through to deep_transport, by checking there's
+        // no TTransport wrapper in the result.
+        let body = Term::TPi(
+            "x".to_string(),
+            b(Term::TApp(b(Term::TVar(1)), b(Term::TVar(0)))),
+            b(Term::TUniv(0)),
+        );
+        let fam = Term::PLam("i".to_string(), b(body));
+        let arg = Term::TAbs("x".to_string(), b(Term::TUniv(0)));
+        let term = Term::TTransport(b(fam), b(arg));
+
+        // nbe_eval uses the full pipeline
+        let result = nbe_eval(&term);
+        assert!(
+            matches!(&result, Term::TAbs(_, _)),
+            "expected TAbs (native Pi transport), got: {}",
+            crate::cubical::syntax::show_term(&[], &result)
+        );
+        // Also: the inner transport must not be a TTransport
+        fn no_inner_transport(t: &Term) -> bool {
+            match t {
+                Term::TTransport(_, _) => false,
+                Term::TAbs(_, b) => no_inner_transport(b),
+                Term::PLam(_, b) => no_inner_transport(b),
+                _ => true,
+            }
+        }
+        assert!(no_inner_transport(&result), "inner transport should reduce");
     }
 }

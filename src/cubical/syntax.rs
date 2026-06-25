@@ -3,7 +3,7 @@
 // Depends on types from interval.rs:
 //   use crate::interval::{I, DNF};
 
-use crate::cubical::interval::{DNF, I};
+use crate::cubical::interval::{DNF, I, dnf_bot, dnf_top};
 use std::fmt;
 
 pub type Name = String;
@@ -489,6 +489,81 @@ pub fn subst(j: i32, s: &Term, term: &Term) -> Term {
 /// Apply `body` (with de Bruijn index 0 free) to `arg`.
 pub fn beta(body: &Term, arg: &Term) -> Term {
     shift(-1, 0, &subst(0, &shift(1, 0, arg), body))
+}
+
+// ---------------------------------------------------------------------------
+// Max variable index
+// ---------------------------------------------------------------------------
+
+/// Return the highest de Bruijn index used in a term (or -1 if none).
+pub fn max_var(t: &Term) -> i32 {
+    match t {
+        Term::TVar(i) => *i,
+        Term::TApp(f, a) => max_var(f).max(max_var(a)),
+        Term::TAbs(_, b) => (max_var(b) - 1).max(-1),
+        Term::TUniv(_) => -1,
+        Term::TIntervalTy => -1,
+        Term::TPi(_, a, b) => max_var(a).max(max_var(b) - 1).max(-1),
+        Term::TInterval(_) => -1,
+        Term::TCube(_) => -1,
+        Term::TPath(a, u, v) => max_var(a).max(max_var(u)).max(max_var(v)),
+        Term::PLam(_, b) => (max_var(b) - 1).max(-1),
+        Term::PApp(p, r) => max_var(p).max(max_var(r)),
+        Term::THComp(a, phi, u, u0) => max_var(a).max(max_var(phi)).max(max_var(u)).max(max_var(u0)),
+        Term::TEquiv(a, b) => max_var(a).max(max_var(b)),
+        Term::TMkEquiv(a, b, f, g, eta, eps) => max_var(a)
+            .max(max_var(b))
+            .max(max_var(f))
+            .max(max_var(g))
+            .max(max_var(eta))
+            .max(max_var(eps)),
+        Term::TEquivFwd(e, x) => max_var(e).max(max_var(x)),
+        Term::TUa(e) => max_var(e),
+        Term::TTransport(p, x) => max_var(p).max(max_var(x)),
+        Term::TGlue(a, phi, te) => max_var(a).max(max_var(phi)).max(max_var(te)),
+        Term::TGlueElem(phi, t, a) => max_var(phi).max(max_var(t)).max(max_var(a)),
+        Term::TUnglue(phi, te, g) => max_var(phi).max(max_var(te)).max(max_var(g)),
+        Term::TSigma(_, a, b) => max_var(a).max(max_var(b) - 1).max(-1),
+        Term::TPair(a, b) => max_var(a).max(max_var(b)),
+        Term::TFst(p) => max_var(p),
+        Term::TSnd(p) => max_var(p),
+        Term::TData(_) => -1,
+        Term::TCon(_, _, args) => args.iter().map(max_var).fold(-1, |m, x| m.max(x)),
+        Term::TPCon(_, _, args, r) => args.iter().map(max_var).fold(-1, |m, x| m.max(x)).max(max_var(r)),
+        Term::TElim(motive, cases, scrut) => {
+            let mut m = max_var(motive).max(max_var(scrut));
+            for case in cases {
+                let n = case.binders.len() as i32;
+                m = m.max(max_var(&case.body) - n);
+            }
+            m.max(-1)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DNF helpers for terms
+// ---------------------------------------------------------------------------
+
+pub fn is_top_dnf(t: &Term) -> bool {
+    matches!(t, Term::TCube(d) if *d == dnf_top())
+}
+
+pub fn is_bot_dnf(t: &Term) -> bool {
+    matches!(t, Term::TCube(d) if *d == dnf_bot())
+}
+
+// ---------------------------------------------------------------------------
+// Extract the domain type from an equivalence term.
+// ---------------------------------------------------------------------------
+
+pub fn equiv_dom(t: &Term) -> Term {
+    match t {
+        Term::TMkEquiv(a, _, _, _, _, _) => (**a).clone(),
+        Term::TEquiv(a, _) => (**a).clone(),
+        Term::TPair(a, _) => (**a).clone(),
+        other => other.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------

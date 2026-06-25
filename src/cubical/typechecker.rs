@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::cubical::equality::{EtaResult, definitionally_equal_ctx_r};
-use crate::cubical::eval::{is_bot_dnf, is_top_dnf};
+use crate::cubical::syntax::{is_bot_dnf, is_top_dnf};
 use crate::cubical::interval::{DNF, I, Literal};
 use crate::cubical::nbe::nbe_eval;
 use crate::cubical::syntax::{Datatype, ElimCase, Level, Name, Term, beta, shift, show_term};

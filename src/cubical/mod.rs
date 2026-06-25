@@ -1,6 +1,5 @@
 pub mod env;
 pub mod equality;
-pub mod eval;
 pub mod interval;
 pub mod nbe;
 pub mod parser;
@@ -298,6 +297,23 @@ mod tests {
         fs::write(&path, src).unwrap();
         let output = run(&path).expect("plus should typecheck");
         assert_eq!(output.name, "four");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn transport_over_ua_still_works() {
+        let src = "\
+def id : (A : U0) -> A -> A = \\A x. x\n\
+def transportExample : (A B : U0) -> Equiv A B -> A -> B =\n\
+  \\A B e a. transport (<i> ua e @ i) a\n\
+def main : (A B : U0) -> Equiv A B -> A -> B = transportExample\n";
+        let dir = std::env::temp_dir().join(format!("cubical_transport_ua_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.uwuc");
+        fs::write(&path, src).unwrap();
+        let output = run(&path).expect("transport over ua should typecheck");
+        // `run()` prefers `main` over earlier definitions
+        assert_eq!(output.name, "main");
         let _ = fs::remove_dir_all(&dir);
     }
 }

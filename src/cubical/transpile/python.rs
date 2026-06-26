@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cubical::interval::I;
 use crate::cubical::parser::Decl;
@@ -57,7 +57,7 @@ pub fn py_path_for_module(module_name: &str) -> PathBuf {
     PathBuf::from(format!("{}.py", module_name.to_lowercase()))
 }
 
-pub fn py_path_from_uwuc_path(path: &PathBuf) -> PathBuf {
+pub fn py_path_from_uwuc_path(path: &Path) -> PathBuf {
     py_path_for_module(&module_name_from_path(path))
 }
 
@@ -306,7 +306,7 @@ fn try_emit_let(term: &Term, env: &[Name], ctx: &mut PythonModuleCtx) -> Option<
 
 fn emit_interval(i: &I, env: &[Name]) -> String {
     match i {
-        I::IVar(n) => env
+        I::Var(n) => env
             .get(*n as usize)
             .cloned()
             .unwrap_or_else(|| format!("i{}", n)),

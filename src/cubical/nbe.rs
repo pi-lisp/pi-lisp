@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::enum_variant_names)]
 
 use crate::cubical::interval::{DNF, I, dnf_bot, dnf_top, eval_interval};
 use crate::cubical::syntax::{ElimCase, Level, Name, Term, beta, equiv_dom, is_bot_dnf, is_top_dnf, max_var, shift, subst};
@@ -702,7 +703,7 @@ pub fn transport_term_fallback(p_: Term, x_: Term) -> Term {
                                 "j".to_string(),
                                 Box::new(Term::PApp(
                                     Box::new(shift(1, 0, &a_fam)),
-                                    Box::new(Term::TInterval(I::Neg(Box::new(I::IVar(0))))),
+                                    Box::new(Term::TInterval(I::Neg(Box::new(I::Var(0))))),
                                 )),
                             );
 
@@ -733,8 +734,8 @@ pub fn transport_term_fallback(p_: Term, x_: Term) -> Term {
                                             Box::new(nbe_eval(&Term::PApp(
                                                 Box::new(shift(2, 0, &a_fam)),
                                                 Box::new(Term::TInterval(I::Meet(
-                                                    Box::new(I::IVar(1)),
-                                                    Box::new(I::IVar(0)),
+                                                    Box::new(I::Var(1)),
+                                                    Box::new(I::Var(0)),
                                                 ))),
                                             ))),
                                         )),
@@ -834,8 +835,8 @@ pub fn transport_term_fallback(p_: Term, x_: Term) -> Term {
                                                 Box::new(nbe_eval(&Term::PApp(
                                                     Box::new(shift(2, 0, &a_fam)),
                                                     Box::new(Term::TInterval(I::Meet(
-                                                        Box::new(I::IVar(1)),
-                                                        Box::new(I::IVar(0)),
+                                                        Box::new(I::Var(1)),
+                                                        Box::new(I::Var(0)),
                                                     ))),
                                                 ))),
                                             )),
@@ -1107,7 +1108,7 @@ fn value_to_dnf(v: Value) -> DNF {
     match v {
         Value::VCube(d) => d,
         Value::VInterval(i) => eval_interval(&i),
-        Value::VIntervalVar(level) => eval_interval(&I::IVar(level as i32)),
+        Value::VIntervalVar(level) => eval_interval(&I::Var(level as i32)),
         other => match quote(0, other) {
             Term::TCube(d) => d,
             Term::TInterval(i) => eval_interval(&i),

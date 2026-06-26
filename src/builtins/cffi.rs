@@ -1,3 +1,5 @@
+#![allow(clippy::missing_transmute_annotations)]
+
 use std::ffi::CString;
 use std::mem::transmute;
 use std::rc::Rc;

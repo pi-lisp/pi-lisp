@@ -55,7 +55,7 @@
 
 use std::rc::Rc;
 
-use crate::expr::{Expr, env_get, env_set, new_env};
+use crate::expr::{Expr, BuiltinFn, env_get, env_set, new_env};
 use crate::gc::{GcHandle, Heap};
 use crate::vm::bytecode::{Chunk, Op, Value, expr_to_value, value_to_expr};
 
@@ -88,7 +88,7 @@ pub(crate) enum VmValue {
     List(Vec<VmValue>),
     Nil,
     /// A wrapped built-in.
-    Builtin(Rc<dyn Fn(&[Expr], &mut Heap) -> Result<Expr, String>>),
+    Builtin(BuiltinFn),
     /// A compiled closure: shared code + captured GC environment.
     Closure {
         chunk: Rc<Chunk>,

@@ -240,7 +240,7 @@ pub fn register_higher_order(env: Env, heap: &mut Heap) {
             };
             let mut result = Vec::with_capacity(list.len());
             for item in list {
-                result.push(apply(f.clone(), &[item.clone()], env, heap)?);
+                result.push(apply(f.clone(), std::slice::from_ref(item), env, heap)?);
             }
             Ok(Expr::List(result))
         })),
@@ -261,7 +261,7 @@ pub fn register_higher_order(env: Env, heap: &mut Heap) {
             };
             let mut result = Vec::new();
             for item in list {
-                let keep = apply(pred.clone(), &[item.clone()], env, heap)?;
+                let keep = apply(pred.clone(), std::slice::from_ref(item), env, heap)?;
                 if is_truthy(&keep) {
                     result.push(item.clone());
                 }

@@ -679,7 +679,7 @@ impl Parser {
             return Ok(Term::TVar((self.term_env.len() + idx) as i32));
         }
         if let Some(idx) = self.ivar_env.iter().position(|n| n == &name) {
-            return Ok(Term::TInterval(I::IVar(idx as i32)));
+            return Ok(Term::TInterval(I::Var(idx as i32)));
         }
         if let Some((dt, is_path)) = self.find_constructor(&name) {
             if is_path {
@@ -829,7 +829,7 @@ fn parse_universe(name: &str) -> Option<i32> {
 fn expect_interval(term: Term, parser: &Parser) -> Result<I, ParseError> {
     match term {
         Term::TInterval(i) => Ok(i),
-        Term::TVar(idx) => Ok(I::IVar(idx)),
+        Term::TVar(idx) => Ok(I::Var(idx)),
         other => Err(parser.error_here(format!("expected interval expression, got {:?}", other))),
     }
 }

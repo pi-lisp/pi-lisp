@@ -63,7 +63,7 @@ fn infer_via_reduction(dts: &[Datatype], ctx: &Ctx, t: &Term, original_err: Type
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeError {
     UnboundVariable(Name),
-    TypeMismatch(Term, Term),
+    TypeMismatch(Box<Term>, Box<Term>),
     ExpectedPi(Term),
     ExpectedPath(Term),
     ExpectedUniverse(Term),
@@ -71,7 +71,7 @@ pub enum TypeError {
     ExpectedSigma(Term),
     NotAnInterval(Term),
     CannotInfer(Term),
-    EtaFuelExhausted(Term, Term),
+    EtaFuelExhausted(Box<Term>, Box<Term>),
     Other(String),
     // Inductive types / HITs
     UnknownDatatype(Name),
@@ -160,10 +160,13 @@ impl fmt::Display for TypeError {
 pub fn require_equal(ctx: &Ctx, expected: &Term, got: &Term) -> Result<(), TypeError> {
     match definitionally_equal_ctx_r(ctx, expected, got) {
         EtaResult::Equal => Ok(()),
-        EtaResult::NotEqual => Err(TypeError::TypeMismatch(nbe_eval(expected), nbe_eval(got))),
+        EtaResult::NotEqual => Err(TypeError::TypeMismatch(
+            Box::new(nbe_eval(expected)),
+            Box::new(nbe_eval(got)),
+        )),
         EtaResult::Exhausted => Err(TypeError::EtaFuelExhausted(
-            nbe_eval(expected),
-            nbe_eval(got),
+            Box::new(nbe_eval(expected)),
+            Box::new(nbe_eval(got)),
         )),
     }
 }
@@ -186,8 +189,8 @@ pub fn require_equal_endpt(ctx: &Ctx, expected: &Term, got: &Term) -> Result<(),
             )))
         }
         EtaResult::Exhausted => Err(TypeError::EtaFuelExhausted(
-            nbe_eval(expected),
-            nbe_eval(got),
+            Box::new(nbe_eval(expected)),
+            Box::new(nbe_eval(got)),
         )),
     }
 }
@@ -303,7 +306,7 @@ pub fn apply_literal(lit: &Literal, t: &Term) -> Term {
 
     fn go_i(i: &I, n: i32, val: &I) -> I {
         match i {
-            I::IVar(k) if *k == n => val.clone(),
+            I::Var(k) if *k == n => val.clone(),
             I::Meet(a, b) => I::Meet(Box::new(go_i(a, n, val)), Box::new(go_i(b, n, val))),
             I::Join(a, b) => I::Join(Box::new(go_i(a, n, val)), Box::new(go_i(b, n, val))),
             I::Neg(a) => I::Neg(Box::new(go_i(a, n, val))),
@@ -319,8 +322,8 @@ pub fn apply_literal(lit: &Literal, t: &Term) -> Term {
                 // Substitute the literal into each cube then re-normalise.
                 let subst_lit = |l: &Literal| -> I {
                     match l {
-                        Literal::Pos(k) => go_i(&I::IVar(*k), n, val),
-                        Literal::NegVar(k) => I::Neg(Box::new(go_i(&I::IVar(*k), n, val))),
+                        Literal::Pos(k) => go_i(&I::Var(*k), n, val),
+                        Literal::NegVar(k) => I::Neg(Box::new(go_i(&I::Var(*k), n, val))),
                     }
                 };
                 let subst_cube = |c: &BTreeSet<Literal>| -> I {
@@ -867,8 +870,8 @@ pub fn infer_dt(dts: &[Datatype], ctx: &Ctx, t: &Term) -> Result<Term, TypeError
                         Term::TPath(a, u, v) => {
                             if !definitionally_equal_ctx_r(ctx, &nbe_eval(&a), &a_ty_).is_equal() {
                                 return Err(TypeError::TypeMismatch(
-                                    nbe_eval(&a_ty_),
-                                    nbe_eval(&a),
+                                    Box::new(nbe_eval(&a_ty_)),
+                                    Box::new(nbe_eval(&a)),
                                 ));
                             }
                             check_dt(dts, ctx, &nbe_eval(&u), &a_ty_)?;
@@ -1464,8 +1467,8 @@ pub fn check_dt(dts: &[Datatype], ctx: &Ctx, t: &Term, ty: &Term) -> Result<(), 
                 Term::TData(ed) => {
                     if ed != d {
                         return Err(TypeError::TypeMismatch(
-                            expected_ty_nf.clone(),
-                            Term::TData(d.clone()),
+                            Box::new(expected_ty_nf.clone()),
+                            Box::new(Term::TData(d.clone())),
                         ));
                     }
                     ed.clone()

@@ -118,7 +118,7 @@ impl ProgramParser {
 ///
 /// Returns the list of successfully checked definitions (name, type, value)
 /// together with the collected datatypes, or a human-readable error string.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::type_complexity)]
 pub fn typecheck_program(
     src: &str,
 ) -> Result<

@@ -400,10 +400,7 @@ pub fn register_file(env: Env, heap: &mut Heap) {
                 .create(true)
                 .append(true)
                 .open(path)
-                .and_then(|mut f| {
-                    f.write_all(content.as_bytes())?;
-                    f.write_all(b"\n")
-                })
+                .and_then(|mut f| f.write_all(content.as_bytes()))
                 .map(|_| Expr::List(vec![]))
                 .map_err(|e| format!("file-append: {}: {}", path, e))
         })),

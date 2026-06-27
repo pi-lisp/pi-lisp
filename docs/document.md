@@ -18,7 +18,7 @@ Source text is scanned character-by-character by `tokenize()` in `reader.rs`. Th
 | `RParen` | `)` | Closes a list form. |
 | `Quote` | `'` | Reader shorthand; expands to `(quote …)`. |
 | `Str(s)` | `"…"` | String literal. Supports `\n \t \r \" \\`; may span multiple lines. |
-| `Atom(s)` | any other run of non-delimiter chars | Parsed in order: `#t`/`#f` → `Bool`; integer (valid `i64`) → `Int`; floating-point (valid `f64`) → `Float`; otherwise → `Symbol`. |
+| `Atom(s)` | any other run of non-delimiter chars | Parsed in order: `#t`/`#f` → `Bool`; integer (valid `i64`) → `Int`; floating-point (valid `f64`) → `Float`; complex (ends with `i`) → `Complex`; otherwise → `Symbol`. |
 
 **Whitespace** (spaces, tabs, newlines, carriage returns) is only a token separator — it carries no structural meaning.
 
@@ -32,6 +32,9 @@ Source text is scanned character-by-character by `tokenize()` in `reader.rs`. Th
 3.14            ; float atom    → Expr::Float(3.14)
 #t              ; boolean atom  → Expr::Bool(true)
 #f              ; boolean atom  → Expr::Bool(false)
+1+2i            ; complex atom  → Expr::Complex(1.0, 2.0)
+3i              ; pure imaginary → Expr::Complex(0.0, 3.0)
+i               ; imaginary unit → Expr::Complex(0.0, 1.0)
 my-symbol       ; symbol atom   → Expr::Symbol("my-symbol")
 ```
 
@@ -39,12 +42,13 @@ my-symbol       ; symbol atom   → Expr::Symbol("my-symbol")
 
 ## 2 · Expression Types
 
-After scanning, `parse()` in `reader.rs` builds an `Expr` tree. There are nine variants (defined in `expr.rs`):
+After scanning, `parse()` in `reader.rs` builds an `Expr` tree. There are ten variants (defined in `expr.rs`):
 
 | Variant | Source syntax | Self-evaluates? |
 |---------|--------------|-----------------|
 | `Int(i64)` | `42`, `-7`, `0` | ✅ yes |
 | `Float(f64)` | `3.14`, `-1.5e2` | ✅ yes |
+| `Complex(f64, f64)` | `1+2i`, `-3i`, `i` | ✅ yes |
 | `Bool(bool)` | `#t`, `#f` | ✅ yes |
 | `Str(String)` | `"hello"` | ✅ yes |
 | `CubicalTerm` | opaque — produced by cubical builtins | ✅ yes |
@@ -56,7 +60,7 @@ After scanning, `parse()` in `reader.rs` builds an `Expr` tree. There are nine v
 **Grammar rule:**
 
 ```
-expr ::= integer | float | bool | string | symbol | 'expr | ( expr* )
+expr ::= integer | float | complex | bool | string | symbol | 'expr | ( expr* )
 ```
 
 ---
@@ -108,7 +112,7 @@ Produces a list template in which most sub-forms are left unevaluated, but `(unq
 
 Evaluates `cond`. If truthy, evaluates and returns `then`; otherwise evaluates and returns `else` (or `()` / nil when `else` is omitted).
 
-**Truthiness rules:** `#f` / `Bool(false)`, integer `0`, float `0.0`, the empty string `""`, and the empty list `()` are all falsy. Everything else — including every `CubicalTerm` — is truthy.
+**Truthiness rules:** `#f` / `Bool(false)`, integer `0`, float `0.0`, the empty string `""`, and the empty list `()` are all falsy. Everything else — including every `Complex` and `CubicalTerm` — is truthy.
 
 ```lisp
 (if (> x 0) "positive" "non-positive")

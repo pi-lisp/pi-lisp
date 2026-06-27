@@ -52,6 +52,7 @@ static CHUNK_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub enum Value {
     Int(i64),
     Float(f64),
+    Complex(f64, f64),
     Bool(bool),
     /// A string literal.
     Str(String),
@@ -79,6 +80,7 @@ impl std::fmt::Debug for Value {
         match self {
             Value::Int(n) => write!(f, "Int({})", n),
             Value::Float(n) => write!(f, "Float({})", n),
+            Value::Complex(re, im) => write!(f, "Complex({}, {})", re, im),
             Value::Bool(b) => write!(f, "Bool({})", b),
             Value::Str(s) => write!(f, "Str({:?})", s),
             Value::Symbol(s) => write!(f, "Symbol({})", s),
@@ -95,6 +97,7 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Complex(a, b), Value::Complex(c, d)) => a == c && b == d,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Symbol(a), Value::Symbol(b)) => a == b,
@@ -131,6 +134,7 @@ pub fn expr_to_value(expr: &Expr) -> Result<Value, String> {
     match expr {
         Expr::Int(n) => Ok(Value::Int(*n)),
         Expr::Float(n) => Ok(Value::Float(*n)),
+        Expr::Complex(re, im) => Ok(Value::Complex(*re, *im)),
         Expr::Bool(b) => Ok(Value::Bool(*b)),
         Expr::Str(s) => Ok(Value::Str(s.clone())),
         Expr::Symbol(s) => Ok(Value::Symbol(s.clone())),
@@ -162,6 +166,7 @@ pub fn value_to_expr(val: Value) -> Expr {
     match val {
         Value::Int(n) => Expr::Int(n),
         Value::Float(n) => Expr::Float(n),
+        Value::Complex(re, im) => Expr::Complex(re, im),
         Value::Bool(b) => Expr::Bool(b),
         Value::Str(s) => Expr::Str(s),
         Value::Symbol(s) => Expr::Symbol(s),

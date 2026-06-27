@@ -12,14 +12,41 @@ use crate::env::{Env, new_env, env_set};
 use crate::expr::Expr;
 use crate::gc::Heap;
 
-/// Extracts a number from an Expr, or errors with context.
+/// Extracts a real number from an Expr, or errors with context.
+/// Complex numbers with zero imaginary part are accepted.
 pub(crate) fn num(e: &Expr) -> Result<f64, String> {
     match e {
         Expr::Int(n) => Ok(*n as f64),
         Expr::Float(n) => Ok(*n),
+        Expr::Complex(re, im) => {
+            if *im == 0.0 {
+                Ok(*re)
+            } else {
+                Err(format!(
+                    "expected real number, got complex {:?}",
+                    e
+                ))
+            }
+        }
         Expr::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         other => Err(format!("expected number, got {:?}", other)),
     }
+}
+
+/// Extracts a complex number from an Expr, converting reals to complex.
+pub(crate) fn complex_arg(e: &Expr) -> Result<(f64, f64), String> {
+    match e {
+        Expr::Int(n) => Ok((*n as f64, 0.0)),
+        Expr::Float(n) => Ok((*n, 0.0)),
+        Expr::Complex(re, im) => Ok((*re, *im)),
+        Expr::Bool(b) => Ok((if *b { 1.0 } else { 0.0 }, 0.0)),
+        other => Err(format!("expected number, got {:?}", other)),
+    }
+}
+
+/// Returns true if any of the arguments is a complex number.
+pub(crate) fn any_complex(args: &[Expr]) -> bool {
+    args.iter().any(|a| matches!(a, Expr::Complex(_, _)))
 }
 
 /// Extracts a string slice from an Expr::Str, or errors with context.
@@ -57,6 +84,7 @@ pub fn global_env(heap: &mut Heap) -> Env {
     base::register_comparisons(env, heap);
     base::register_lists(env, heap);
     base::register_higher_order(env, heap);
+    base::register_complex(env, heap);
     utils::register_strings(env, heap);
     utils::register_misc(env, heap);
     utils::register_threading(env, heap);

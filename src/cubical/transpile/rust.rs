@@ -226,6 +226,135 @@ fn emit_path_constructor_def(pcon: &PConSig, constructors: &HashMap<Name, Name>)
     }
 }
 
+fn free_vars(term: &Term) -> HashSet<usize> {
+    match term {
+        Term::TVar(i) => {
+            let mut s = HashSet::new();
+            s.insert(*i as usize);
+            s
+        }
+        Term::TApp(f, a) => {
+            let mut s = free_vars(f);
+            s.extend(free_vars(a));
+            s
+        }
+        Term::TAbs(_, body) => free_vars(body)
+            .iter()
+            .filter(|i| **i > 0)
+            .map(|i| i - 1)
+            .collect(),
+        Term::TPi(_, a, b) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(b).iter().filter(|i| **i > 0).map(|i| i - 1));
+            s
+        }
+        Term::PLam(_, body) => free_vars(body)
+            .iter()
+            .filter(|i| **i > 0)
+            .map(|i| i - 1)
+            .collect(),
+        Term::TSigma(_, a, b) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(b).iter().filter(|i| **i > 0).map(|i| i - 1));
+            s
+        }
+        Term::TElim(motive, cases, scrut) => {
+            let mut s = free_vars(motive);
+            s.extend(free_vars(scrut));
+            for case in cases {
+                let n = case.binders.len();
+                let mut case_fvs = free_vars(&case.body);
+                for _ in 0..n {
+                    case_fvs = case_fvs.iter().filter(|i| **i > 0).map(|i| i - 1).collect();
+                }
+                s.extend(case_fvs);
+            }
+            s
+        }
+        Term::TUniv(_)
+        | Term::TIntervalTy
+        | Term::TInterval(_)
+        | Term::TCube(_)
+        | Term::TData(_) => HashSet::new(),
+        Term::TPath(a, u, v) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(u));
+            s.extend(free_vars(v));
+            s
+        }
+        Term::PApp(p, r) => {
+            let mut s = free_vars(p);
+            s.extend(free_vars(r));
+            s
+        }
+        Term::THComp(a, phi, u, u0) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(phi));
+            s.extend(free_vars(u));
+            s.extend(free_vars(u0));
+            s
+        }
+        Term::TEquiv(a, b) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(b));
+            s
+        }
+        Term::TMkEquiv(a, b, f, g, eta, eps) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(b));
+            s.extend(free_vars(f));
+            s.extend(free_vars(g));
+            s.extend(free_vars(eta));
+            s.extend(free_vars(eps));
+            s
+        }
+        Term::TEquivFwd(e, x) => {
+            let mut s = free_vars(e);
+            s.extend(free_vars(x));
+            s
+        }
+        Term::TUa(e) => free_vars(e),
+        Term::TTransport(p, x) => {
+            let mut s = free_vars(p);
+            s.extend(free_vars(x));
+            s
+        }
+        Term::TGlue(a, phi, te) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(phi));
+            s.extend(free_vars(te));
+            s
+        }
+        Term::TGlueElem(phi, t, a) => {
+            let mut s = free_vars(phi);
+            s.extend(free_vars(t));
+            s.extend(free_vars(a));
+            s
+        }
+        Term::TUnglue(phi, te, g) => {
+            let mut s = free_vars(phi);
+            s.extend(free_vars(te));
+            s.extend(free_vars(g));
+            s
+        }
+        Term::TPair(a, b) => {
+            let mut s = free_vars(a);
+            s.extend(free_vars(b));
+            s
+        }
+        Term::TFst(p) => free_vars(p),
+        Term::TSnd(p) => free_vars(p),
+        Term::TCon(_, _, args) => {
+            args.iter().flat_map(free_vars).collect()
+        }
+        Term::TPCon(_, _, args, r) => {
+            let mut s: HashSet<usize> = args.iter().flat_map(free_vars).collect();
+            s.extend(free_vars(r));
+            s
+        }
+    }
+}
+
 pub fn emit_term(term: &Term, env: &[Name], ctx: &mut RustModuleCtx) -> String {
     if let Some(let_expr) = try_emit_let(term, env, ctx) {
         return let_expr;
@@ -247,9 +376,25 @@ pub fn emit_term(term: &Term, env: &[Name], ctx: &mut RustModuleCtx) -> String {
             let lc = lowercase_first(x);
             let mut env2 = vec![lc.clone()];
             env2.extend_from_slice(env);
+
+            let fvs = free_vars(body);
+            let mut prelude = String::new();
+            for i in (1..env2.len()).rev() {
+                if fvs.contains(&i) {
+                    let name = env2[i].clone();
+                    if ctx.def_names.contains(&name) {
+                        continue;
+                    }
+                    let clone_name = format!("_{}", name);
+                    prelude.push_str(&format!("let {} = {}.clone(); ", clone_name, name));
+                    env2[i] = clone_name;
+                }
+            }
+
             format!(
-                "fun(move |{}| {{ {} }})",
+                "fun(move |{}| {{ {}{} }})",
                 lc,
+                prelude,
                 emit_term(body, &env2, ctx)
             )
         }

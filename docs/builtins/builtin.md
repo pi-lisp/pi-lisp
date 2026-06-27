@@ -7,3 +7,12 @@ sidebar:
 
 This document describes all builtin procedures registered in the global environment. Functions are grouped by category.
 
+### Complex numbers
+
+pi-lisp supports **complex numbers** as a first-class numeric type. You can write them directly using rectangular notation:
+
+- `1+2i`, `3-4i` — rectangular form
+- `5i`, `-i`, `i` — pure imaginary / imaginary unit
+
+All arithmetic (`+`, `-`, `*`, `/`) transparently promotes real numbers to complex when any argument is complex. The builtins `real-part`, `imag-part`, `magnitude`, `angle`, `make-rectangular`, and `make-polar` provide further complex-number operations. See the [Arithmetic](arithmetic/) page for details.
+

@@ -168,6 +168,8 @@ pub fn parse(tokens: &[Token], pos: &mut usize) -> Result<Expr, String> {
                 Ok(Expr::Int(n))
             } else if let Ok(n) = s.parse::<f64>() {
                 Ok(Expr::Float(n))
+            } else if let Some(c) = parse_complex(&s) {
+                Ok(c)
             } else {
                 Ok(Expr::Symbol(s))
             }
@@ -216,4 +218,50 @@ pub fn parse_params(e: &Expr) -> Result<Vec<String>, String> {
     } else {
         Err(format!("expected a parameter list, got: {:?}", e))
     }
+}
+
+/// Try to parse a complex number from an atom string.
+///
+/// Supports:
+/// - `3+4i`, `3-4i` — rectangular form
+/// - `3i`, `-3i` — pure imaginary
+/// - `+i`, `-i` — the imaginary unit and its negation
+fn parse_complex(s: &str) -> Option<Expr> {
+    if !s.ends_with('i') {
+        return None;
+    }
+    let body = &s[..s.len() - 1]; // strip trailing 'i'
+
+    // Pure imaginary: a number followed by 'i' (e.g. "3i", "-3i")
+    if let Ok(n) = body.parse::<f64>() {
+        return Some(Expr::Complex(0.0, n));
+    }
+
+    // Special cases: "i" and "+i" and "-i"
+    if body.is_empty() || body == "+" {
+        return Some(Expr::Complex(0.0, 1.0));
+    }
+    if body == "-" {
+        return Some(Expr::Complex(0.0, -1.0));
+    }
+
+    // Rectangular form: "a+bi" or "a-bi"
+    // Find the last '+' or '-' that is not the sign of the real part.
+    let start = if body.starts_with('+') || body.starts_with('-') {
+        1
+    } else {
+        0
+    };
+    if let Some(pos) = body[start..]
+        .rfind('+')
+        .or_else(|| body[start..].rfind('-'))
+    {
+        let split = start + pos;
+        let real_str = &body[..split];
+        let imag_str = &body[split..];
+        if let (Ok(re), Ok(im)) = (real_str.parse::<f64>(), imag_str.parse::<f64>()) {
+            return Some(Expr::Complex(re, im));
+        }
+    }
+    None
 }

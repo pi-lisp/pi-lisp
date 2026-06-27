@@ -31,6 +31,8 @@ pub enum Expr {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// A complex number: real and imaginary parts as f64.
+    Complex(f64, f64),
     /// A string literal, e.g. `"hello world"`.  Self-evaluating.
     Str(String),
     List(Vec<Expr>),
@@ -58,6 +60,17 @@ impl fmt::Debug for Expr {
             Expr::Int(n) => write!(f, "{}", n),
             Expr::Float(n) => write!(f, "{}", n),
             Expr::Bool(b) => write!(f, "{}", if *b { "#t" } else { "#f" }),
+            Expr::Complex(re, im) => {
+                if *im == 0.0 {
+                    write!(f, "{}", re)
+                } else if *re == 0.0 {
+                    write!(f, "{}i", im)
+                } else if *im < 0.0 {
+                    write!(f, "{}{}i", re, im)
+                } else {
+                    write!(f, "{}+{}i", re, im)
+                }
+            }
             Expr::Str(s) => write!(f, "{:?}", s),
             Expr::List(l) => {
                 write!(f, "(")?;
@@ -82,6 +95,7 @@ pub fn is_truthy(e: &Expr) -> bool {
         Expr::Bool(b) => *b,
         Expr::Int(n) => *n != 0,
         Expr::Float(n) => *n != 0.0,
+        Expr::Complex(_, _) => true,
         Expr::Str(s) => !s.is_empty(),
         Expr::List(l) => !l.is_empty(),
         Expr::CubicalTerm(_) => true,

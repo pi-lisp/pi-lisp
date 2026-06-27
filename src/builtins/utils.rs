@@ -211,6 +211,9 @@ impl ThreadValue {
                 .map(ThreadValue::from_expr)
                 .collect::<Result<Vec<_>, _>>()
                 .map(ThreadValue::List),
+            Expr::Complex(_, _) => {
+                Err("worker returned a complex number, which cannot cross threads".into())
+            }
             Expr::Func(_) => {
                 Err("worker returned a builtin function, which cannot cross threads".into())
             }

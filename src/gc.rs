@@ -809,6 +809,7 @@ fn collect_lambda_envs(root: &Expr, out: &mut Vec<GcHandle>) {
             Expr::Symbol(_)
             | Expr::Int(_)
             | Expr::Float(_)
+            | Expr::Complex(_, _)
             | Expr::Bool(_)
             | Expr::Str(_)
             | Expr::Func(_)

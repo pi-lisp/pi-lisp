@@ -106,9 +106,8 @@ fn expand_all(expr: &Expr, env: crate::expr::Env, heap: &mut Heap) -> Result<Exp
         Expr::CubicalTerm(_) => Err("uncompilable: CubicalTerm".into()),
 
         // Atoms — nothing to expand.
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Symbol(_) => {
-            Ok(expr.clone())
-        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Complex(_, _) | Expr::Bool(_) | Expr::Str(_)
+        | Expr::Symbol(_) => Ok(expr.clone()),
 
         // Func / Lambda / Macro are runtime values; they shouldn't appear as
         // raw AST nodes in the source being compiled, but handle gracefully.
@@ -194,6 +193,10 @@ fn compile_expr(
         }
         Expr::Float(n) => {
             chunk.emit(Op::LoadConst(Value::Float(*n)));
+            Ok(())
+        }
+        Expr::Complex(re, im) => {
+            chunk.emit(Op::LoadConst(Value::Complex(*re, *im)));
             Ok(())
         }
         Expr::Bool(b) => {
@@ -1056,7 +1059,7 @@ fn is_compilable_rec(expr: &Expr, qq_depth: usize, heap: &Heap, env: GcHandle) -
         return false;
     }
     match expr {
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) => true,
+        Expr::Int(_) | Expr::Float(_) | Expr::Complex(_, _) | Expr::Bool(_) => true,
         Expr::Str(_) => true,
         Expr::Symbol(s) => {
             if qq_depth == 0 {

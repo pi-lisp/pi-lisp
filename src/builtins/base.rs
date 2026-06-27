@@ -1,10 +1,21 @@
 use std::rc::Rc;
 
-use crate::builtins::num;
+use crate::builtins::{num, complex_arg, any_complex};
 use crate::env::{Env, env_set};
 use crate::eval::apply;
 use crate::expr::{Expr, is_truthy};
 use crate::gc::Heap;
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Build a result expression from a real value and a "was float" flag.
+fn real_result(val: f64, any_float: bool) -> Expr {
+    if any_float || val != (val as i64) as f64 {
+        Expr::Float(val)
+    } else {
+        Expr::Int(val as i64)
+    }
+}
 
 pub fn register_arithmetic(env: Env, heap: &mut Heap) {
     env_set(
@@ -12,14 +23,25 @@ pub fn register_arithmetic(env: Env, heap: &mut Heap) {
         env,
         "+".into(),
         Expr::Func(Rc::new(|args, _heap| {
-            let mut sum = 0.0;
-            let mut any_float = false;
-            for a in args {
-                let n = num(a)?;
-                any_float = any_float || matches!(a, Expr::Float(_));
-                sum += n;
+            if any_complex(args) {
+                let mut re = 0.0;
+                let mut im = 0.0;
+                for a in args {
+                    let (r, i) = complex_arg(a)?;
+                    re += r;
+                    im += i;
+                }
+                Ok(Expr::Complex(re, im))
+            } else {
+                let mut sum = 0.0;
+                let mut any_float = false;
+                for a in args {
+                    let n = num(a)?;
+                    any_float = any_float || matches!(a, Expr::Float(_));
+                    sum += n;
+                }
+                Ok(real_result(sum, any_float))
             }
-            if any_float { Ok(Expr::Float(sum)) } else { Ok(Expr::Int(sum as i64)) }
         })),
     );
 
@@ -31,25 +53,39 @@ pub fn register_arithmetic(env: Env, heap: &mut Heap) {
             if args.is_empty() {
                 return Err("-: need at least 1 argument".into());
             }
-            if args.len() == 1 {
-                let n = num(&args[0])?;
-                let any_float = matches!(args[0], Expr::Float(_));
-                return if any_float {
-                    Ok(Expr::Float(-n))
+            if any_complex(args) {
+                let (mut re, mut im) = complex_arg(&args[0])?;
+                if args.len() == 1 {
+                    Ok(Expr::Complex(-re, -im))
                 } else {
-                    let n = n as i64;
-                    n.checked_neg().map(Expr::Int).ok_or_else(|| "-: integer overflow".into())
-                };
+                    for a in &args[1..] {
+                        let (r, i) = complex_arg(a)?;
+                        re -= r;
+                        im -= i;
+                    }
+                    Ok(Expr::Complex(re, im))
+                }
+            } else {
+                if args.len() == 1 {
+                    let n = num(&args[0])?;
+                    let any_float = matches!(args[0], Expr::Float(_));
+                    return if any_float {
+                        Ok(Expr::Float(-n))
+                    } else {
+                        let n = n as i64;
+                        n.checked_neg().map(Expr::Int).ok_or_else(|| "-: integer overflow".into())
+                    };
+                }
+                let mut it = args.iter();
+                let first = it.next().unwrap();
+                let mut any_float = matches!(first, Expr::Float(_));
+                let mut acc = num(first)?;
+                for a in it {
+                    any_float = any_float || matches!(a, Expr::Float(_));
+                    acc -= num(a)?;
+                }
+                Ok(real_result(acc, any_float))
             }
-            let mut it = args.iter();
-            let first = it.next().unwrap();
-            let mut any_float = matches!(first, Expr::Float(_));
-            let mut acc = num(first)?;
-            for a in it {
-                any_float = any_float || matches!(a, Expr::Float(_));
-                acc -= num(a)?;
-            }
-            if any_float { Ok(Expr::Float(acc)) } else { Ok(Expr::Int(acc as i64)) }
         })),
     );
 
@@ -58,14 +94,27 @@ pub fn register_arithmetic(env: Env, heap: &mut Heap) {
         env,
         "*".into(),
         Expr::Func(Rc::new(|args, _heap| {
-            let mut prod = 1.0;
-            let mut any_float = false;
-            for a in args {
-                let n = num(a)?;
-                any_float = any_float || matches!(a, Expr::Float(_));
-                prod *= n;
+            if any_complex(args) {
+                let mut re = 1.0;
+                let mut im = 0.0;
+                for a in args {
+                    let (r, i) = complex_arg(a)?;
+                    let new_re = re * r - im * i;
+                    let new_im = re * i + im * r;
+                    re = new_re;
+                    im = new_im;
+                }
+                Ok(Expr::Complex(re, im))
+            } else {
+                let mut prod = 1.0;
+                let mut any_float = false;
+                for a in args {
+                    let n = num(a)?;
+                    any_float = any_float || matches!(a, Expr::Float(_));
+                    prod *= n;
+                }
+                Ok(real_result(prod, any_float))
             }
-            if any_float { Ok(Expr::Float(prod)) } else { Ok(Expr::Int(prod as i64)) }
         })),
     );
 
@@ -77,22 +126,46 @@ pub fn register_arithmetic(env: Env, heap: &mut Heap) {
             if args.is_empty() {
                 return Err("/: need at least 1 argument".into());
             }
-            let mut it = args.iter();
-            let first = it.next().unwrap();
-            let mut any_float = matches!(first, Expr::Float(_));
-            let mut acc = num(first)?;
-            for a in it {
-                any_float = any_float || matches!(a, Expr::Float(_));
-                let d = num(a)?;
-                if d == 0.0 {
-                    return Err("/: division by zero".into());
+            if any_complex(args) {
+                let (mut re, mut im) = complex_arg(&args[0])?;
+                if args.len() == 1 {
+                    let denom = re * re + im * im;
+                    if denom == 0.0 {
+                        return Err("/: division by zero".into());
+                    }
+                    Ok(Expr::Complex(re / denom, -im / denom))
+                } else {
+                    for a in &args[1..] {
+                        let (r, i) = complex_arg(a)?;
+                        let denom = r * r + i * i;
+                        if denom == 0.0 {
+                            return Err("/: division by zero".into());
+                        }
+                        let new_re = (re * r + im * i) / denom;
+                        let new_im = (im * r - re * i) / denom;
+                        re = new_re;
+                        im = new_im;
+                    }
+                    Ok(Expr::Complex(re, im))
                 }
-                acc /= d;
-            }
-            if any_float || acc != (acc as i64) as f64 {
-                Ok(Expr::Float(acc))
             } else {
-                Ok(Expr::Int(acc as i64))
+                let mut it = args.iter();
+                let first = it.next().unwrap();
+                let mut any_float = matches!(first, Expr::Float(_));
+                let mut acc = num(first)?;
+                for a in it {
+                    any_float = any_float || matches!(a, Expr::Float(_));
+                    let d = num(a)?;
+                    if d == 0.0 {
+                        return Err("/: division by zero".into());
+                    }
+                    acc /= d;
+                }
+                if any_float || acc != (acc as i64) as f64 {
+                    Ok(Expr::Float(acc))
+                } else {
+                    Ok(Expr::Int(acc as i64))
+                }
             }
         })),
     );
@@ -133,7 +206,21 @@ pub fn register_comparisons(env: Env, heap: &mut Heap) {
         };
     }
 
-    env_set(heap, env, "=".into(), cmp_fn!(==));
+    // `=` supports complex numbers (equality of both real and imag parts).
+    env_set(
+        heap,
+        env,
+        "=".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 2 {
+                return Err("= expects exactly 2 arguments".into());
+            }
+            let (a, b) = complex_arg(&args[0])?;
+            let (c, d) = complex_arg(&args[1])?;
+            Ok(Expr::Bool(a == c && b == d))
+        })),
+    );
+
     env_set(heap, env, "<".into(), cmp_fn!(<));
     env_set(heap, env, ">".into(), cmp_fn!(>));
     env_set(heap, env, "<=".into(), cmp_fn!(<=));
@@ -288,6 +375,88 @@ pub fn register_higher_order(env: Env, heap: &mut Heap) {
                 acc = apply(f.clone(), &[acc, item.clone()], env, heap)?;
             }
             Ok(acc)
+        })),
+    );
+}
+
+pub fn register_complex(env: Env, heap: &mut Heap) {
+    env_set(
+        heap,
+        env,
+        "real-part".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 1 {
+                return Err("real-part expects exactly 1 argument".into());
+            }
+            let (re, _) = complex_arg(&args[0])?;
+            Ok(Expr::Float(re))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "imag-part".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 1 {
+                return Err("imag-part expects exactly 1 argument".into());
+            }
+            let (_, im) = complex_arg(&args[0])?;
+            Ok(Expr::Float(im))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "magnitude".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 1 {
+                return Err("magnitude expects exactly 1 argument".into());
+            }
+            let (re, im) = complex_arg(&args[0])?;
+            Ok(Expr::Float((re * re + im * im).sqrt()))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "angle".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 1 {
+                return Err("angle expects exactly 1 argument".into());
+            }
+            let (re, im) = complex_arg(&args[0])?;
+            Ok(Expr::Float(im.atan2(re)))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "make-rectangular".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 2 {
+                return Err("make-rectangular expects exactly 2 arguments".into());
+            }
+            let re = num(&args[0])?;
+            let im = num(&args[1])?;
+            Ok(Expr::Complex(re, im))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "make-polar".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 2 {
+                return Err("make-polar expects exactly 2 arguments".into());
+            }
+            let r = num(&args[0])?;
+            let theta = num(&args[1])?;
+            Ok(Expr::Complex(r * theta.cos(), r * theta.sin()))
         })),
     );
 }

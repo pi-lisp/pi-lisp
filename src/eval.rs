@@ -131,7 +131,9 @@ pub fn apply(
 /// either a finished value or a tail-call descriptor.
 fn eval_step(expr: &Expr, env: Env, heap: &mut Heap) -> Result<Step, String> {
     match expr {
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) => Ok(Step::Value(expr.clone())),
+        Expr::Int(_) | Expr::Float(_) | Expr::Complex(_, _) | Expr::Bool(_) => {
+            Ok(Step::Value(expr.clone()))
+        }
         Expr::Str(_) => Ok(Step::Value(expr.clone())),
         // CubicalTerm values are opaque atoms — they self-evaluate just like
         // numbers and are only inspected by the cubical builtins.

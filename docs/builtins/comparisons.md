@@ -4,7 +4,7 @@ sidebar:
   order: 4
 ---
 
-All numeric comparisons take exactly two number arguments and return `1.0` for true, `0.0` for false.
+All numeric comparisons take exactly two number arguments and return `#t` for true, `#f` for false.
 
 | Function | Description         |
 |----------|---------------------|
@@ -15,17 +15,25 @@ All numeric comparisons take exactly two number arguments and return `1.0` for t
 | `>=`     | Greater than or equal |
 
 ```
-(= a b)   →  1.0 or 0.0
-(< a b)   →  1.0 or 0.0
+(= a b)   →  #t or #f
+(< a b)   →  #t or #f
+```
+
+`=` works with complex numbers — it compares both the real and imaginary parts. `<`, `>`, `<=`, `>=` raise an error when given a complex number with a non-zero imaginary part (complex numbers have no total ordering).
+
+```lisp
+(= 1+2i 1+2i)   ; ⇒ #t
+(= 1+2i 3+4i)   ; ⇒ #f
+(< 1+2i 3+4i)   ; error: expected real number, got complex 1+2i
 ```
 
 ---
 
 ### `not`
-Logical negation. Returns `1.0` if the argument is falsy, `0.0` otherwise.
+Logical negation. Returns `#t` if the argument is falsy, `#f` otherwise.
 
 ```
-(not x)  →  1.0 or 0.0
+(not x)  →  #t or #f
 ```
 
 Expects exactly one argument.

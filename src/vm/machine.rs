@@ -82,6 +82,7 @@ use crate::vm::bytecode::{Chunk, Op, Value, expr_to_value, value_to_expr};
 pub(crate) enum VmValue {
     Int(i64),
     Float(f64),
+    Complex(f64, f64),
     Bool(bool),
     Str(String),
     Symbol(String),
@@ -103,6 +104,7 @@ impl std::fmt::Debug for VmValue {
         match self {
             VmValue::Int(n) => write!(f, "{}", n),
             VmValue::Float(n) => write!(f, "{}", n),
+            VmValue::Complex(re, im) => write!(f, "Complex({}, {})", re, im),
             VmValue::Bool(b) => write!(f, "{}", if *b { "#t" } else { "#f" }),
             VmValue::Str(s) => write!(f, "{:?}", s),
             VmValue::Symbol(s) => write!(f, "{}", s),
@@ -128,6 +130,7 @@ fn from_value(v: Value) -> VmValue {
     match v {
         Value::Int(n) => VmValue::Int(n),
         Value::Float(n) => VmValue::Float(n),
+        Value::Complex(re, im) => VmValue::Complex(re, im),
         Value::Bool(b) => VmValue::Bool(b),
         Value::Str(s) => VmValue::Str(s),
         Value::Symbol(s) => VmValue::Symbol(s),
@@ -153,6 +156,7 @@ fn into_value(v: VmValue) -> Result<Value, String> {
     match v {
         VmValue::Int(n) => Ok(Value::Int(n)),
         VmValue::Float(n) => Ok(Value::Float(n)),
+        VmValue::Complex(re, im) => Ok(Value::Complex(re, im)),
         VmValue::Bool(b) => Ok(Value::Bool(b)),
         VmValue::Str(s) => Ok(Value::Str(s)),
         VmValue::Symbol(s) => Ok(Value::Symbol(s)),
@@ -179,6 +183,7 @@ fn into_value(v: VmValue) -> Result<Value, String> {
 /// Convert a `VmValue` to an `Expr` for the interpreter boundary.
 pub(crate) fn vm_value_to_expr(v: VmValue, _heap: &mut Heap) -> Result<Expr, String> {
     match v {
+        VmValue::Complex(re, im) => Ok(Expr::Complex(re, im)),
         VmValue::Builtin(f) => Ok(Expr::Func(f)),
         VmValue::Closure {
             params,
@@ -198,6 +203,7 @@ pub(crate) fn expr_to_vm_value(expr: &Expr, heap: &mut Heap) -> Result<VmValue, 
     match expr {
         Expr::Int(n) => Ok(VmValue::Int(*n)),
         Expr::Float(n) => Ok(VmValue::Float(*n)),
+        Expr::Complex(re, im) => Ok(VmValue::Complex(*re, *im)),
         Expr::Bool(b) => Ok(VmValue::Bool(*b)),
         Expr::Str(s) => Ok(VmValue::Str(s.clone())),
         Expr::Symbol(s) => Ok(VmValue::Symbol(s.clone())),
@@ -249,6 +255,7 @@ fn is_truthy(v: &VmValue) -> bool {
         VmValue::Bool(b) => *b,
         VmValue::Int(n) => *n != 0,
         VmValue::Float(n) => *n != 0.0,
+        VmValue::Complex(_, _) => true,
         VmValue::Nil => false,
         VmValue::Str(s) => !s.is_empty(),
         VmValue::List(l) => !l.is_empty(),

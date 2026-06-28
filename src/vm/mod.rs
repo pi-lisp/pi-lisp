@@ -10,6 +10,7 @@
 //!    returns an `"uncompilable"` error (e.g. because the expression contains
 //!    a `CubicalTerm`).
 
+pub mod aot;
 pub mod bytecode;
 pub mod cache;
 pub mod compiler;
@@ -146,6 +147,35 @@ pub fn cache_stats() -> (usize, usize) {
         let c = c.borrow();
         (c.chunks.len(), c.compilable.len())
     })
+}
+
+// ── AOT (Ahead-of-Time) compilation helpers ──────────────────────────────
+
+/// Compile a Lisp source file to an AOT bytecode file on disk.
+///
+/// Parses the source, compiles every compilable top-level form into a
+/// serialised `Chunk`, and writes the result to `output_path`.
+pub fn aot_compile_file(
+    input_path: &str,
+    output_path: &str,
+    env: GcHandle,
+    heap: &mut Heap,
+) -> Result<(), String> {
+    let src =
+        std::fs::read_to_string(input_path).map_err(|e| format!("read '{}': {}", input_path, e))?;
+    let bytes = aot::compile_to_bytes(&src, env, heap)?;
+    std::fs::write(output_path, &bytes).map_err(|e| format!("write '{}': {}", output_path, e))?;
+    Ok(())
+}
+
+/// Load an AOT bytecode file into the thread-local compile cache.
+///
+/// Subsequent evaluations of expressions whose Debug-key matches a cached
+/// entry will use the pre-compiled bytecode directly, bypassing compilation.
+pub fn aot_load_file(path: &str) -> Result<(), String> {
+    let data =
+        std::fs::read(path).map_err(|e| format!("read AOT '{}': {}", path, e))?;
+    CACHE.with(|c| aot::load_into_cache(&data, &mut c.borrow_mut()))
 }
 
 #[cfg(test)]

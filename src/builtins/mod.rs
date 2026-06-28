@@ -100,6 +100,7 @@ pub fn global_env(heap: &mut Heap) -> Env {
     asm::register_load_asm(env, heap);
     #[cfg(target_arch = "x86_64")]
     asm::register_load_asm_parallel(env, heap);
+    register_aot(env, heap);
 
     env
 }
@@ -152,6 +153,50 @@ fn register_load_ctt(env: Env, heap: &mut Heap) {
                 Expr::CubicalTerm(Box::new(output.ty)),
                 Expr::CubicalTerm(Box::new(output.value)),
             ]))
+        })),
+    );
+}
+
+fn register_aot(env: Env, heap: &mut Heap) {
+    env_set(
+        heap,
+        env,
+        "aot-compile".into(),
+        Expr::Func(Rc::new(|args, heap| {
+            if args.len() < 1 || args.len() > 3 {
+                return Err(format!(
+                    "aot-compile: expected 1-2 arguments (input [output]), got {}",
+                    args.len()
+                ));
+            }
+            let input = str_arg(&args[0])?.to_string();
+            let output = if args.len() >= 2 {
+                str_arg(&args[1])?.to_string()
+            } else {
+                let p = std::path::Path::new(&input);
+                let stem = p.file_stem().unwrap_or_default().to_str().unwrap_or("out");
+                format!("{}.aot", stem)
+            };
+            let global = crate::builtins::global_env(heap);
+            crate::vm::aot_compile_file(&input, &output, global, heap)?;
+            Ok(Expr::Str(output))
+        })),
+    );
+
+    env_set(
+        heap,
+        env,
+        "aot-load".into(),
+        Expr::Func(Rc::new(|args, _heap| {
+            if args.len() != 1 {
+                return Err(format!(
+                    "aot-load: expected 1 argument (path), got {}",
+                    args.len()
+                ));
+            }
+            let path = str_arg(&args[0])?;
+            crate::vm::aot_load_file(path)?;
+            Ok(Expr::List(vec![]))
         })),
     );
 }

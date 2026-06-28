@@ -7,6 +7,8 @@ sidebar:
 
 This document describes all builtin procedures registered in the global environment. Functions are grouped by category.
 
+See also: [Ahead-of-Time Compilation](aot/) — `aot-compile` and `aot-load` builtins.
+
 ### Complex numbers
 
 pi-lisp supports **complex numbers** as a first-class numeric type. You can write them directly using rectangular notation:

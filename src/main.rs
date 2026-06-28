@@ -115,10 +115,51 @@ fn main() {
 
     if args.len() < 2 {
         repl(global_env, &mut heap);
+    } else if args[1] == "--help" || args[1] == "-h" {
+        println!("pi-lisp — a Lisp interpreter with cubical type theory and AOT compilation");
+        println!();
+        println!("USAGE:");
+        println!("  pilisp                         Start the REPL");
+        println!("  pilisp <file.pi>               Evaluate a Lisp source file");
+        println!("  pilisp <file.pic>              Run a cubical type theory file");
+        println!("  pilisp --cubical <file.pic>    Explicit cubical mode");
+        println!("  pilisp --aot <file.pi>         AOT-compile to <file>.aot");
+        println!("  pilisp --aot <file.pi> -o <f>  AOT-compile to <f>");
+        println!("  pilisp --cubical-transpile <file.pic> [-o <dir>]     Transpile cubical to Python");
+        println!("  pilisp --cubical-transpile-rust <file.pic> [-o <dir>] Transpile cubical to Rust");
+        println!("  pilisp --help                  Show this help");
+        println!();
+        println!("When a .pi file is run, pilisp auto-loads <file>.aot if it exists");
+        println!("for faster startup via cached bytecode.");
     } else {
         let mut i = 1;
         while i < args.len() {
-            if args[i] == "--cubical" {
+            if args[i] == "--aot-compile" || args[i] == "--aot" {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: {} requires a filename argument", args[i - 1]);
+                    process::exit(1);
+                }
+                let input_path = args[i].clone();
+                i += 1;
+                let output_path = if i < args.len() && args[i] == "-o" {
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("Error: -o requires a filename argument");
+                        process::exit(1);
+                    }
+                    args[i].clone()
+                } else {
+                    let p = Path::new(&input_path);
+                    let stem = p.file_stem().unwrap_or_default().to_str().unwrap_or("out");
+                    format!("{}.aot", stem)
+                };
+                match vm::aot_compile_file(&input_path, &output_path, global_env, &mut heap) {
+                    Ok(()) => println!("AOT compiled: {} -> {}", input_path, output_path),
+                    Err(e) => eprintln!("AOT compile error: {}", e),
+                }
+                return;
+            } else if args[i] == "--cubical" {
                 i += 1;
                 if i >= args.len() {
                     eprintln!("Error: --cubical requires a filename argument");
@@ -234,6 +275,24 @@ fn main() {
                     }
                     i += 1;
                     continue;
+                }
+
+                // Reject .aot files as direct input — run the corresponding .pi instead.
+                if path.extension().and_then(|s| s.to_str()) == Some("aot") {
+                    eprintln!(
+                        "Error: cannot run .aot files directly. Run the matching .pi file:\n  cargo run -- {}",
+                        path.with_extension("pi").display()
+                    );
+                    process::exit(1);
+                }
+
+                // Auto-load AOT bytecode if a matching `.aot` file exists
+                let aot_path = path.with_extension("aot");
+                if aot_path.exists() {
+                    match vm::aot_load_file(aot_path.to_str().unwrap()) {
+                        Ok(()) => eprintln!("[aot] loaded {}", aot_path.display()),
+                        Err(e) => eprintln!("[aot] error loading {}: {}", aot_path.display(), e),
+                    }
                 }
 
                 let src = match fs::read_to_string(file_path) {

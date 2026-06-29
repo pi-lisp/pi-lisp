@@ -1,24 +1,14 @@
-mod builtins;
-mod cubical;
-mod env;
-mod eval;
-mod expr;
-mod gc;
-mod helper;
-mod macros;
-mod reader;
-mod tinyasm;
-mod vm;
-
-use eval::{eval, with_import_base};
-use gc::{GcHandle, Heap};
-use reader::parse_all;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use crate::helper::shared_read_line;
+use pilisp::cubical;
+use pilisp::eval::{eval, with_import_base};
+use pilisp::gc::{GcHandle, Heap};
+use pilisp::reader::parse_all;
+use pilisp::helper::shared_read_line;
+use pilisp::vm;
 
 /// Parses and evaluates all expressions in `src`, printing each result.
 ///
@@ -47,14 +37,14 @@ fn repl(global_env: GcHandle, heap: &mut Heap) {
 
     println!("    /\\___/\\");
     println!("   (  UwU  )");
-    println!("    \\ ({BOLD}{MAGENTA}π{R}) /");
+    println!("    \\ ({BOLD}{MAGENTA}\u{3c0}{R}) /");
     println!("    (_____)");
     println!("   {BOLD}{CYAN}pi-lisp REPL{R}");
     println!("   {DIM}Ctrl+D to exit{R}");
     let mut input = String::new();
 
     loop {
-        let prompt = if input.is_empty() { "π> " } else { "...  " };
+        let prompt = if input.is_empty() { "\u{3c0}> " } else { "...  " };
         print!("{}", prompt);
         io::stdout().flush().unwrap();
 
@@ -111,12 +101,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let mut heap = Heap::new();
-    let global_env = builtins::global_env(&mut heap);
+    let global_env = pilisp::builtins::global_env(&mut heap);
 
     if args.len() < 2 {
         repl(global_env, &mut heap);
     } else if args[1] == "--help" || args[1] == "-h" {
-        println!("pi-lisp — a Lisp interpreter with cubical type theory and AOT compilation");
+        println!("pi-lisp \u{2014} a Lisp interpreter with cubical type theory and AOT compilation");
         println!();
         println!("USAGE:");
         println!("  pilisp                         Start the REPL");
@@ -277,7 +267,7 @@ fn main() {
                     continue;
                 }
 
-                // Reject .aot files as direct input — run the corresponding .pi instead.
+                // Reject .aot files as direct input
                 if path.extension().and_then(|s| s.to_str()) == Some("aot") {
                     eprintln!(
                         "Error: cannot run .aot files directly. Run the matching .pi file:\n  cargo run -- {}",
@@ -308,7 +298,7 @@ fn main() {
                 let base = path.parent();
                 with_import_base(base, || run(&src, global_env, &mut heap));
 
-                let (chunks, compilable) = crate::vm::cache_stats();
+                let (chunks, compilable) = vm::cache_stats();
                 eprintln!("[cache] chunks={} compilable={}", chunks, compilable);
             }
             i += 1;

@@ -79,7 +79,7 @@ use crate::vm::bytecode::{Chunk, Op, Value, expr_to_value, value_to_expr};
 /// `VmValue`, and we convert to/from `Value` (and `Expr`) only at the
 /// interpreter boundary.
 #[derive(Clone)]
-pub(crate) enum VmValue {
+pub enum VmValue {
     Int(i64),
     Float(f64),
     Complex(f64, f64),
@@ -181,7 +181,7 @@ fn into_value(v: VmValue) -> Result<Value, String> {
 }
 
 /// Convert a `VmValue` to an `Expr` for the interpreter boundary.
-pub(crate) fn vm_value_to_expr(v: VmValue, _heap: &mut Heap) -> Result<Expr, String> {
+pub fn vm_value_to_expr(v: VmValue, _heap: &mut Heap) -> Result<Expr, String> {
     match v {
         VmValue::Complex(re, im) => Ok(Expr::Complex(re, im)),
         VmValue::Builtin(f) => Ok(Expr::Func(f)),
@@ -199,7 +199,7 @@ pub(crate) fn vm_value_to_expr(v: VmValue, _heap: &mut Heap) -> Result<Expr, Str
 }
 
 /// Convert an `Expr` to a `VmValue`, bridging built-in and lambda values.
-pub(crate) fn expr_to_vm_value(expr: &Expr, heap: &mut Heap) -> Result<VmValue, String> {
+pub fn expr_to_vm_value(expr: &Expr, heap: &mut Heap) -> Result<VmValue, String> {
     match expr {
         Expr::Int(n) => Ok(VmValue::Int(*n)),
         Expr::Float(n) => Ok(VmValue::Float(*n)),

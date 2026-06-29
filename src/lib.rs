@@ -10,7 +10,7 @@ pub mod reader;
 pub mod tinyasm;
 pub mod vm;
 
-pub use expr::Expr;
+pub use expr::{Expr, env_set, new_env, is_truthy};
 pub use gc::Heap;
 pub use eval::{eval, with_import_base};
 pub use reader::{tokenize, parse, parse_all};
